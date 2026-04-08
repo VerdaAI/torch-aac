@@ -1,0 +1,111 @@
+"""Scalefactor band offset tables for AAC-LC.
+
+Each table maps a sample rate to the list of scalefactor band widths (in spectral
+lines) for long blocks (1024-line MDCT). These are defined in ISO 14496-3 Table 4.85.
+
+The offset of band *i* is ``sum(widths[:i])`` and the total number of bands is
+``len(widths)``.
+"""
+
+from __future__ import annotations
+
+# Scalefactor band widths for LONG windows (1024 spectral lines).
+# Key: sample rate (Hz) → list of band widths.
+# Source: ISO 14496-3:2009, Table 4.85 / MPEG-2 AAC (ISO 13818-7) Tables.
+SFB_LONG: dict[int, list[int]] = {
+    96000: [
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        8, 8, 8, 8, 8, 12, 12, 12, 12, 12, 16, 16, 24, 28,
+        36, 44, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+    ],
+    88200: [
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        8, 8, 8, 8, 8, 12, 12, 12, 12, 12, 16, 16, 24, 28,
+        36, 44, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64, 64,
+    ],
+    64000: [
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4,
+        8, 8, 8, 8, 12, 12, 12, 16, 16, 16, 20, 24, 24, 28,
+        36, 40, 44, 48, 52, 56, 64, 64, 64, 64, 64, 64, 64,
+        64, 64, 64, 64, 64, 64,
+    ],
+    48000: [
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 8, 8, 8, 8,
+        8, 8, 8, 12, 12, 12, 12, 16, 16, 20, 20, 24, 24, 28,
+        28, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 96,
+    ],
+    44100: [
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 8, 8, 8, 8,
+        8, 8, 8, 12, 12, 12, 12, 16, 16, 20, 20, 24, 24, 28,
+        28, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 96,
+    ],
+    32000: [
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 8, 8, 8, 8,
+        8, 8, 8, 12, 12, 12, 12, 16, 16, 20, 20, 24, 24, 28,
+        28, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32, 32,
+        32, 32, 32, 32, 32, 32, 32, 96,
+    ],
+    24000: [
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 8, 8, 8,
+        8, 8, 8, 8, 8, 12, 12, 12, 12, 16, 16, 16, 20, 20,
+        24, 24, 28, 28, 32, 36, 36, 40, 44, 48, 52, 52, 64,
+        64, 64, 64, 64,
+    ],
+    22050: [
+        4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 4, 8, 8, 8,
+        8, 8, 8, 8, 8, 12, 12, 12, 12, 16, 16, 16, 20, 20,
+        24, 24, 28, 28, 32, 36, 36, 40, 44, 48, 52, 52, 64,
+        64, 64, 64, 64,
+    ],
+    16000: [
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 12, 12, 12,
+        12, 12, 12, 12, 12, 12, 16, 16, 16, 16, 20, 20, 20,
+        24, 24, 28, 28, 32, 36, 40, 40, 44, 48, 52, 56, 60,
+        64, 64, 64,
+    ],
+    12000: [
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 12, 12, 12,
+        12, 12, 12, 12, 12, 12, 16, 16, 16, 16, 20, 20, 20,
+        24, 24, 28, 28, 32, 36, 40, 40, 44, 48, 52, 56, 60,
+        64, 64, 64,
+    ],
+    11025: [
+        8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 8, 12, 12, 12,
+        12, 12, 12, 12, 12, 12, 16, 16, 16, 16, 20, 20, 20,
+        24, 24, 28, 28, 32, 36, 40, 40, 44, 48, 52, 56, 60,
+        64, 64, 64,
+    ],
+    8000: [
+        12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12, 12,
+        12, 16, 16, 16, 16, 16, 16, 16, 20, 20, 20, 20, 24,
+        24, 24, 28, 28, 32, 36, 36, 44, 44, 52, 52, 64, 64,
+        64, 64,
+    ],
+}
+
+
+def get_sfb_offsets(sample_rate: int) -> list[int]:
+    """Return cumulative scalefactor band offsets for the given sample rate.
+
+    Args:
+        sample_rate: Audio sample rate in Hz.
+
+    Returns:
+        List of offsets where ``offsets[i]`` is the starting spectral line of
+        band *i*, and ``offsets[-1] == 1024``.
+
+    Raises:
+        KeyError: If the sample rate has no SFB table.
+    """
+    widths = SFB_LONG[sample_rate]
+    offsets = [0]
+    for w in widths:
+        offsets.append(offsets[-1] + w)
+    return offsets
+
+
+def get_num_sfb(sample_rate: int) -> int:
+    """Return the number of scalefactor bands for long blocks at this sample rate."""
+    return len(SFB_LONG[sample_rate])

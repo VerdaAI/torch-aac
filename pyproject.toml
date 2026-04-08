@@ -1,0 +1,88 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "torch-aac"
+version = "0.1.0"
+description = "GPU-accelerated and differentiable AAC-LC encoder using PyTorch"
+readme = "README.md"
+license = "Apache-2.0"
+requires-python = ">=3.10"
+authors = [
+    { name = "Verda AI", email = "dev@verda.ai" },
+]
+keywords = ["aac", "audio", "codec", "gpu", "pytorch", "differentiable", "encoding"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Multimedia :: Sound/Audio",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+dependencies = [
+    "torch>=2.0",
+    "numpy>=1.24",
+    "soundfile>=0.12",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0",
+    "pytest-benchmark",
+    "ruff>=0.4",
+    "mypy>=1.0",
+    "scipy",
+]
+
+[project.scripts]
+torch-aac = "torch_aac.__main__:main"
+
+[project.urls]
+Homepage = "https://github.com/verda-ai/torch-aac"
+Documentation = "https://github.com/verda-ai/torch-aac/tree/main/docs"
+Repository = "https://github.com/verda-ai/torch-aac"
+Issues = "https://github.com/verda-ai/torch-aac/issues"
+
+[tool.ruff]
+target-version = "py310"
+line-length = 99
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "W",    # pycodestyle warnings
+    "F",    # pyflakes
+    "I",    # isort
+    "UP",   # pyupgrade
+    "B",    # flake8-bugbear
+    "SIM",  # flake8-simplify
+    "RUF",  # ruff-specific
+]
+ignore = [
+    "E501",   # line length handled by formatter
+    "RUF001", # ambiguous unicode (× in docstrings is fine)
+    "RUF002", # ambiguous unicode in docstrings
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["torch_aac"]
+
+[tool.mypy]
+python_version = "3.10"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+
+[[tool.mypy.overrides]]
+module = ["soundfile.*", "scipy.*"]
+ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-v --tb=short"
