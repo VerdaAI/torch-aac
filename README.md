@@ -113,7 +113,7 @@ mypy torch_aac/
 
 ## License
 
-Apache 2.0 — see [LICENSE](LICENSE)
+[Elastic License 2.0 (ELv2)](LICENSE) — free to use, modify, and distribute. You may not offer this software as a hosted/managed service.
 
 ## Acknowledgments
 

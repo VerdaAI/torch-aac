@@ -70,4 +70,4 @@ See `docs/architecture.md` for a detailed technical guide.
 
 ## License
 
-By contributing, you agree that your contributions will be licensed under Apache 2.0.
+By contributing, you agree that your contributions will be licensed under the [Elastic License 2.0](LICENSE).
