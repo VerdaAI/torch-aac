@@ -218,27 +218,26 @@ def _write_ics(
         - scalefactor_data
         - spectral_data
     """
-    len(sfb_offsets) - 1
+    num_sfb = len(sfb_offsets) - 1
 
     # global_gain (8 bits)
     writer.write_bits(global_gain & 0xFF, 8)
 
     # --- ics_info ---
-    # ics_reserved_bit
-    writer.write_bits(0, 1)
-    # window_sequence: ONLY_LONG_SEQUENCE = 0b00
-    writer.write_bits(0, 2)
-    # window_shape: sine = 0b1
-    writer.write_bits(1, 1)
-    # max_sfb: V1 uses 0 (silent frames). Real spectral encoding in V2.
-    writer.write_bits(0, 6)
-    # predictor_data_present: 0 (no LTP)
-    writer.write_bits(0, 1)
+    writer.write_bits(0, 1)       # ics_reserved_bit
+    writer.write_bits(0, 2)       # window_sequence: ONLY_LONG_SEQUENCE
+    writer.write_bits(1, 1)       # window_shape: sine
+    writer.write_bits(num_sfb, 6) # max_sfb
+    writer.write_bits(0, 1)       # predictor_data_present: 0
 
-    # With max_sfb=0: no section_data, scalefactor_data, or spectral_data.
-    # Write 3 zero bits for byte-alignment compatibility with FFmpeg's decoder.
-    # FFmpeg's bit reader expects the END element to be byte-aligned after ICS.
-    writer.write_bits(0, 3)
+    # --- section_data ---
+    _write_section_data(writer, codebook_indices, num_sfb)
+
+    # --- scalefactor_data ---
+    _write_scalefactor_data(writer, num_sfb, codebook_indices)
+
+    # --- spectral_data ---
+    _write_spectral_data(writer, quantized, codebook_indices, sfb_offsets, huffman_encode_fn)
 
 
 def _write_zero_frame_data(
@@ -306,8 +305,8 @@ def _write_scalefactor_data(
 ) -> None:
     """Write scalefactor data using Huffman-encoded deltas.
 
-    With uniform global gain (V1), all deltas are 0. The Huffman code for
-    delta=0 is 0b11 (2 bits) per the scalefactor codebook.
+    With uniform global gain, all scalefactors are equal, so all deltas are 0.
+    The scalefactor Huffman code for delta=0 is a single "0" bit.
     """
     from torch_aac.cpu.scalefactor import encode_scalefactor_delta
 
@@ -316,8 +315,7 @@ def _write_scalefactor_data(
             # Zero section — no scalefactor needed
             continue
         # Delta = 0 for uniform gain
-        codeword, num_bits = encode_scalefactor_delta(0)
-        writer.write_bits(codeword, num_bits)
+        encode_scalefactor_delta(writer, 0)
 
 
 def _write_spectral_data(

@@ -18,9 +18,9 @@ CODEBOOK_DIMS = [0, 4, 4, 4, 4, 2, 2, 2, 2, 2, 2, 2]
 CODEBOOK_MAX_ABS = [0, 1, 1, 2, 2, 4, 4, 7, 7, 12, 12, 16]
 CODEBOOK_IS_UNSIGNED = [
     False,  # 0: unused
-    True, True,     # 1-2: unsigned quads, max 1
+    False, False,   # 1-2: signed quads, values {-1,0,1} encoded directly
     True, True,     # 3-4: unsigned quads, max 2 (separate sign bits)
-    False, False,   # 5-6: signed pairs
+    False, False,   # 5-6: signed pairs, values {-4..4} encoded directly
     True, True,     # 7-8: unsigned pairs (separate sign bits)
     True, True,     # 9-10: unsigned pairs (separate sign bits)
     True,           # 11: unsigned pairs, escape (separate sign bits)
