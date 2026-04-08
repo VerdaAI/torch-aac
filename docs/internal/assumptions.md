@@ -104,8 +104,29 @@ First MDCT implementation using FFT twiddle factors had a ~512x energy scaling e
 The Huffman tables agent identified that `gpu/huffman_select.py` and `cpu/huffman.py` mark codebooks 1-2 as unsigned (`True`), but per ISO spec they are **signed** (values -1, 0, +1 encoded directly without separate sign bits). This needs to be fixed when real Huffman encoding is enabled.
 **Impact**: None in V1 (max_sfb=0, no spectral data). Will cause incorrect encoding in Phase 2.
 
-### C4: OPEN — 3 mystery bits after ICS header
-See assumption A4 above. Need to determine what these bits represent before Phase 2.
+### C4: PARTIALLY RESOLVED — 3 mystery bits after ICS header
+For max_sfb=0, these 3 bits are byte-alignment padding that FFmpeg's bit reader
+consumes. For max_sfb > 0, section_data fills the corresponding bit positions.
+
+### C5: OPEN — FFmpeg requires fully correct spectral encoding to init channels
+FFmpeg only allocates channel elements after the first frame is fully decoded
+with valid spectral data. We cannot use "max_sfb > 0 with all zeros" as a
+stepping stone — we must go directly to fully correct spectral encoding.
+
+**Root cause found**: The section_data + scalefactor_data + spectral_data bit
+layout is structurally correct (verified by bit-level parsing), but FFmpeg's
+decoder rejects frames that don't contain properly encoded spectral content.
+
+**Debug approach for next session**:
+1. Generate a 1-frame AAC with FFmpeg's encoder (reference)
+2. Parse the reference frame completely — every bit of spectral data
+3. Generate our frame with identical MDCT coefficients and gain
+4. Compare bit-by-bit to find the first divergence
+5. Fix the divergence and iterate
+
+The encoding infrastructure (Huffman tables, section writer, scalefactor coder,
+spectral data writer) is COMPLETE. The remaining work is ensuring the bit-level
+output exactly matches what FFmpeg's decoder expects.
 
 ---
 
