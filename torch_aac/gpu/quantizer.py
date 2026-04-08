@@ -131,12 +131,24 @@ def estimate_bit_count(
     """
     abs_q = torch.abs(quantized)
 
-    # Approximate Huffman cost per coefficient
-    # Zero: ~1 bit, small values: ~3-5 bits, larger: ~log2(val)+2
+    # Approximate Huffman cost per coefficient.
+    # This drives the rate control loop — must be conservative (overestimate)
+    # to avoid producing frames that overflow the decoder's escape limit.
+    #
+    # Cost model:
+    # - Zero: ~0.5 bits (section/codebook overhead amortized)
+    # - Small (1-16): Huffman code (~4-10 bits) + sign bit
+    # - Large (>16): Huffman(16) + escape(N ones + 0 + N+4 bits) + sign bit
+    #   where N = ceil(log2(|q|)) - 3. Total ≈ 2*log2(|q|) + 10 bits.
+    log_q = torch.log2(abs_q + 1.0)
     cost = torch.where(
         abs_q < 0.5,
-        torch.ones_like(abs_q),  # zero cost ≈ 1 bit
-        torch.log2(abs_q + 1.0) + 2.0,  # non-zero cost
+        torch.full_like(abs_q, 0.5),
+        torch.where(
+            abs_q <= 16.0,
+            log_q + 5.0,
+            log_q * 2.5 + 12.0,  # escape codes: very expensive
+        ),
     )
 
     return cost.sum(dim=-1)

@@ -119,14 +119,23 @@ def _encode_unsigned_group(
                 _encode_escape(writer, int(abs_values[j]))
 
 
+MAX_ESCAPE_N = 8
+"""Maximum escape sequence length. FFmpeg's decoder limits N to 8, allowing values up to 4095."""
+
+MAX_ESCAPE_VAL = (1 << (MAX_ESCAPE_N + 4)) - 1  # 4095
+
+
 def _encode_escape(writer: BitWriter, abs_val: int) -> None:
     """Encode an escape code for codebook 11 (values > 15).
 
     Escape format per ISO 14496-3:
         N ones + one zero + (N+4) bit mantissa
     where N = floor(log2(abs_val)) - 3
+
+    Values are clamped to MAX_ESCAPE_VAL (4095) to avoid decoder overflow.
     """
-    n = max(0, abs_val.bit_length() - 4)
+    abs_val = min(abs_val, MAX_ESCAPE_VAL)
+    n = max(0, min(abs_val.bit_length() - 4, MAX_ESCAPE_N))
     # N ones
     for _ in range(n):
         writer.write_bits(1, 1)

@@ -98,19 +98,15 @@ def select_codebooks(
     cb_expanded = codebook_maxabs.unsqueeze(0).unsqueeze(0)  # (1, 1, 11)
 
     # Can this codebook handle the values? (bool mask)
+    # Codebook 11 (index 10) can encode ANY value via escape codes
     can_encode = cb_expanded >= max_abs_expanded  # (N, sfb, 11)
+    can_encode[..., 10] = True  # Codebook 11 always works (escape codes)
 
     # For bands with all zeros, use codebook 0 (zero section)
     is_zero_band = max_abs_per_band < 0.5  # (N, sfb)
 
-    # Assign very high cost to codebooks that can't encode
-    # Find the first valid codebook (smallest range that works)
-    # Use argmax on the can_encode mask (first True)
-    # Add 1 because codebooks are 1-indexed
-    # If no codebook can encode (shouldn't happen with book 11), default to 11
+    # Select smallest codebook that can encode. Prefer smaller for efficiency.
     invalid_penalty = torch.where(can_encode, 0, 1000)
-    # Prefer smaller codebooks (they tend to have shorter codes for small values)
-    # Add a small preference penalty for larger codebooks
     preference = torch.arange(11, device=device, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
     cost = invalid_penalty.float() + preference * 0.01
 

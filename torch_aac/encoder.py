@@ -184,8 +184,10 @@ class AACEncoder:
         )
         global_gains = find_global_gain(mdct_coeffs, target)  # (B,)
 
-        # 4. Quantize
+        # 4. Quantize and clamp to escape code limit
         quantized = quantize(mdct_coeffs, global_gains, mode=QuantMode.HARD)  # (B, C, 1024)
+        # Clamp absolute values to 4095 (max escape code value in AAC)
+        quantized = quantized.clamp(-4095, 4095)
 
         # 5. Codebook selection per channel
         # Flatten to (B*C, 1024) for codebook selection
