@@ -124,31 +124,14 @@ def write_single_channel_element(
     codebook_indices: NDArray[np.int32],
     sfb_offsets: list[int],
     huffman_encode_fn: object,
+    scalefactors: NDArray[np.int32] | None = None,
 ) -> None:
-    """Write a single_channel_element (SCE) to the bitstream.
-
-    SCE structure:
-        - element ID:          3 bits (ID_SCE = 0x01 → actually 0b000 for first SCE)
-        - element instance tag: 4 bits (0)
-        - individual_channel_stream (ICS)
-
-    Args:
-        writer: BitWriter to write to.
-        quantized: Quantized spectral coefficients, shape ``(1024,)``.
-        global_gain: Global gain value (0-255).
-        codebook_indices: Huffman codebook index per SFB, shape ``(num_sfb,)``.
-        sfb_offsets: Cumulative SFB offsets.
-        huffman_encode_fn: Function to encode spectral data with Huffman codes.
-    """
-    len(sfb_offsets) - 1
-
+    """Write a single_channel_element (SCE) to the bitstream."""
     # id_syn_ele: ID_SCE = 0 (3 bits)
     writer.write_bits(0b000, 3)
-    # element_instance_tag
     writer.write_bits(0, 4)
-
-    # --- individual_channel_stream ---
-    _write_ics(writer, quantized, global_gain, codebook_indices, sfb_offsets, huffman_encode_fn)
+    _write_ics(writer, quantized, global_gain, codebook_indices, sfb_offsets,
+               huffman_encode_fn, scalefactors)
 
 
 def write_channel_pair_element(
@@ -161,44 +144,18 @@ def write_channel_pair_element(
     codebook_indices_r: NDArray[np.int32],
     sfb_offsets: list[int],
     huffman_encode_fn: object,
+    scalefactors_l: NDArray[np.int32] | None = None,
+    scalefactors_r: NDArray[np.int32] | None = None,
 ) -> None:
-    """Write a channel_pair_element (CPE) to the bitstream.
-
-    CPE structure:
-        - element ID:           3 bits (ID_CPE = 0b010)
-        - element instance tag:  4 bits
-        - common_window:         1 bit (0 = independent L/R)
-        - ICS for left
-        - ICS for right
-
-    Args:
-        writer: BitWriter to write to.
-        quantized_l: Left channel quantized coefficients.
-        quantized_r: Right channel quantized coefficients.
-        global_gain_l: Left channel global gain.
-        global_gain_r: Right channel global gain.
-        codebook_indices_l: Left channel codebook indices.
-        codebook_indices_r: Right channel codebook indices.
-        sfb_offsets: Cumulative SFB offsets.
-        huffman_encode_fn: Function to encode spectral data.
-    """
-    len(sfb_offsets) - 1
-
-    # id_syn_ele: ID_CPE = 1 (3 bits)
+    """Write a channel_pair_element (CPE) to the bitstream."""
     writer.write_bits(0b001, 3)
-    # element_instance_tag
     writer.write_bits(0, 4)
-    # common_window: 0 = independent L/R (no M/S stereo)
-    writer.write_bits(0, 1)
+    writer.write_bits(0, 1)  # common_window=0
 
-    # Left channel ICS
-    _write_ics(
-        writer, quantized_l, global_gain_l, codebook_indices_l, sfb_offsets, huffman_encode_fn
-    )
-    # Right channel ICS
-    _write_ics(
-        writer, quantized_r, global_gain_r, codebook_indices_r, sfb_offsets, huffman_encode_fn
-    )
+    _write_ics(writer, quantized_l, global_gain_l, codebook_indices_l,
+               sfb_offsets, huffman_encode_fn, scalefactors_l)
+    _write_ics(writer, quantized_r, global_gain_r, codebook_indices_r,
+               sfb_offsets, huffman_encode_fn, scalefactors_r)
 
 
 def _write_ics(
@@ -208,16 +165,9 @@ def _write_ics(
     codebook_indices: NDArray[np.int32],
     sfb_offsets: list[int],
     huffman_encode_fn: object,
+    scalefactors: NDArray[np.int32] | None = None,
 ) -> None:
-    """Write an individual_channel_stream (ICS).
-
-    ICS structure:
-        - global_gain:          8 bits
-        - ics_info
-        - section_data
-        - scalefactor_data
-        - spectral_data
-    """
+    """Write an individual_channel_stream (ICS)."""
     num_sfb_total = len(sfb_offsets) - 1
 
     # Determine effective max_sfb: highest band with SIGNIFICANT content.
@@ -252,7 +202,8 @@ def _write_ics(
         _write_section_data(writer, active_codebooks, max_sfb)
 
         # --- scalefactor_data ---
-        _write_scalefactor_data(writer, max_sfb, active_codebooks)
+        active_sf = scalefactors[:max_sfb] if scalefactors is not None else None
+        _write_scalefactor_data(writer, max_sfb, active_codebooks, global_gain, active_sf)
 
     # --- pulse, TNS, gain control flags (BEFORE spectral data!) ---
     # Per ISO 14496-3 and FFmpeg's aacdec.c, these flags come after
@@ -328,20 +279,30 @@ def _write_scalefactor_data(
     writer: BitWriter,
     num_sfb: int,
     codebook_indices: NDArray[np.int32],
+    global_gain: int = 0,
+    scalefactors: NDArray[np.int32] | None = None,
 ) -> None:
     """Write scalefactor data using Huffman-encoded deltas.
 
-    With uniform global gain, all scalefactors are equal, so all deltas are 0.
-    The scalefactor Huffman code for delta=0 is a single "0" bit.
+    Scalefactors are delta-encoded: the first is relative to global_gain,
+    subsequent ones are relative to the previous. Only bands with non-zero
+    codebooks get scalefactor entries.
     """
     from torch_aac.cpu.scalefactor import encode_scalefactor_delta
 
+    prev_sf = global_gain
     for i in range(num_sfb):
         if int(codebook_indices[i]) == 0:
-            # Zero section — no scalefactor needed
             continue
-        # Delta = 0 for uniform gain
-        encode_scalefactor_delta(writer, 0)
+        if scalefactors is not None:
+            sf = int(scalefactors[i])
+        else:
+            sf = global_gain
+        delta = sf - prev_sf
+        # Clamp delta to valid range [-60, 60]
+        delta = max(-60, min(60, delta))
+        encode_scalefactor_delta(writer, delta)
+        prev_sf = prev_sf + delta  # use clamped delta for tracking
 
 
 def _write_spectral_data(
@@ -432,6 +393,8 @@ def build_adts_frame(
     quantized_r: NDArray[np.int32] | None = None,
     global_gain_r: int | None = None,
     codebook_indices_r: NDArray[np.int32] | None = None,
+    scalefactors: NDArray[np.int32] | None = None,
+    scalefactors_r: NDArray[np.int32] | None = None,
 ) -> bytes:
     """Build a complete ADTS frame.
 
@@ -463,14 +426,16 @@ def build_adts_frame(
             quantized, quantized_r,
             global_gain, global_gain_r,
             codebook_indices, codebook_indices_r,
-            sfb_offsets,
-            huffman_encode_fn,
+            sfb_offsets, huffman_encode_fn,
+            scalefactors_l=scalefactors,
+            scalefactors_r=scalefactors_r,
         )
     else:
         write_single_channel_element(
             payload_writer,
             quantized, global_gain, codebook_indices,
             sfb_offsets, huffman_encode_fn,
+            scalefactors=scalefactors,
         )
 
     write_end_element(payload_writer)

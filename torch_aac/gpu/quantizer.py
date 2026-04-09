@@ -122,6 +122,66 @@ def dequantize(
     return signs * decompressed * step
 
 
+def quantize_per_band(
+    mdct_coeffs: torch.Tensor,
+    scalefactors: torch.Tensor,
+    sfb_offsets: list[int],
+    mode: QuantMode = QuantMode.HARD,
+) -> torch.Tensor:
+    """Quantize MDCT coefficients using per-band scalefactors.
+
+    Each scalefactor band uses its own quantizer step:
+        step[band] = 2^(0.25 * (sf[band] - SF_OFFSET))
+
+    Args:
+        mdct_coeffs: Shape ``(B, C, 1024)`` or ``(B, 1024)``.
+        scalefactors: Per-band scalefactors, shape ``(B, num_sfb)`` or ``(B, C, num_sfb)``.
+        sfb_offsets: Cumulative SFB offsets.
+        mode: Quantization mode.
+
+    Returns:
+        Quantized coefficients, same shape as mdct_coeffs.
+    """
+    device = mdct_coeffs.device
+    result = torch.zeros_like(mdct_coeffs)
+    num_sfb = len(sfb_offsets) - 1
+
+    # Flatten for processing
+    flat_coeffs = mdct_coeffs.reshape(-1, 1024)
+    flat_result = result.reshape(-1, 1024)
+    flat_sf = scalefactors.reshape(-1, num_sfb)
+    N = flat_coeffs.shape[0]
+
+    for i in range(num_sfb):
+        s, e = sfb_offsets[i], sfb_offsets[i + 1]
+        if e > 1024:
+            break
+        band_sf = flat_sf[:, i]  # (N,)
+        step = torch.pow(2.0, 0.25 * (band_sf.float() - SF_OFFSET)).unsqueeze(-1)  # (N, 1)
+
+        band_coeffs = flat_coeffs[:, s:e]  # (N, band_width)
+        signs = torch.sign(band_coeffs)
+        abs_coeffs = torch.abs(band_coeffs)
+        compressed = torch.pow(abs_coeffs + 1e-10, 0.75)
+        scaled = compressed / step
+
+        if mode == QuantMode.HARD:
+            quantized = torch.round(scaled)
+        elif mode == QuantMode.STE:
+            quantized = scaled + (torch.round(scaled) - scaled).detach()
+        elif mode == QuantMode.NOISE:
+            if mdct_coeffs.requires_grad:
+                quantized = scaled + torch.rand_like(scaled) - 0.5
+            else:
+                quantized = torch.round(scaled)
+        else:
+            raise ValueError(f"Unknown mode: {mode}")
+
+        flat_result[:, s:e] = signs * quantized
+
+    return flat_result.reshape_as(mdct_coeffs)
+
+
 def estimate_bit_count(
     quantized: torch.Tensor,
 ) -> torch.Tensor:

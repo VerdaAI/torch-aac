@@ -17,8 +17,8 @@ from torch_aac.cpu.bitstream import build_adts_frame
 from torch_aac.cpu.huffman import encode_spectral_band
 from torch_aac.gpu.filterbank import apply_window, frame_audio, mdct
 from torch_aac.gpu.huffman_select import select_codebooks
-from torch_aac.gpu.quantizer import quantize
-from torch_aac.gpu.rate_control import find_global_gain
+from torch_aac.gpu.quantizer import quantize, quantize_per_band
+from torch_aac.gpu.rate_control import compute_scalefactors, find_global_gain
 from torch_aac.tables.sfb_tables import get_sfb_offsets
 
 
@@ -184,21 +184,28 @@ class AACEncoder:
         )
         global_gains = find_global_gain(mdct_coeffs, target)  # (B,)
 
-        # 4. Quantize and clamp to escape code limit
-        quantized = quantize(mdct_coeffs, global_gains, mode=QuantMode.HARD)  # (B, C, 1024)
-        # Clamp absolute values to 4095 (max escape code value in AAC)
+        # 4. Compute per-band scalefactors for optimal reconstruction
+        # Shape: (B, C, num_sfb) or (B, num_sfb)
+        scalefactors = compute_scalefactors(
+            mdct_coeffs, global_gains, self._sfb_offsets
+        )
+
+        # 5. Quantize using per-band scalefactors
+        quantized = quantize_per_band(
+            mdct_coeffs, scalefactors, self._sfb_offsets, mode=QuantMode.HARD
+        )
         quantized = quantized.clamp(-4095, 4095)
 
-        # 5. Codebook selection per channel
-        # Flatten to (B*C, 1024) for codebook selection
+        # 6. Codebook selection per channel
         q_flat = quantized.reshape(B * C, -1)
-        codebooks = select_codebooks(q_flat, self._sfb_offsets)  # (B*C, num_sfb)
-        codebooks = codebooks.reshape(B, C, -1)  # (B, C, num_sfb)
+        codebooks = select_codebooks(q_flat, self._sfb_offsets)
+        codebooks = codebooks.reshape(B, C, -1)
 
         # === Transfer to CPU ===
         quantized_np = quantized.cpu().numpy().astype(np.int32)
         codebooks_np = codebooks.cpu().numpy().astype(np.int32)
         gains_np = global_gains.cpu().numpy().astype(np.int32)
+        sf_np = scalefactors.cpu().numpy().astype(np.int32)
 
         # === CPU stages ===
         adts_frames: list[bytes] = []
@@ -212,6 +219,7 @@ class AACEncoder:
                     codebook_indices=codebooks_np[i, 0],
                     sfb_offsets=self._sfb_offsets,
                     huffman_encode_fn=encode_spectral_band,
+                    scalefactors=sf_np[i, 0],
                 )
             else:
                 frame_bytes = build_adts_frame(
@@ -224,6 +232,8 @@ class AACEncoder:
                     quantized_r=quantized_np[i, 1],
                     global_gain_r=int(gains_np[i]),
                     codebook_indices_r=codebooks_np[i, 1],
+                    scalefactors=sf_np[i, 0],
+                    scalefactors_r=sf_np[i, 1],
                 )
             adts_frames.append(frame_bytes)
 
