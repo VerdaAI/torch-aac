@@ -614,12 +614,11 @@ def _index_to_values(book: int, index: int) -> tuple[int, ...]:
     for _ in range(dim):
         values.append(remaining % base - offset)
         remaining //= base
-    # The ISO spec and FFmpeg extract values from the index in increasing power
-    # order: val[0] = idx % base (lowest power), val[dim-1] = idx / base^(dim-1).
-    # The spectral coefficients in the bitstream are in their natural order
-    # (coeff[0], coeff[1], ...), matching val[0], val[1], etc.
-    # Reverse to get MSB-first (coeff[0] = val[dim-1]):
-    values.reverse()
+    # FFmpeg's decoder extracts values as:
+    #   off[j] = (index / base^j) % base - offset
+    # where j=0 gives coeff[0], j=1 gives coeff[1], etc.
+    # This matches our LSB-first extraction: val[0] = index % base - offset.
+    # Do NOT reverse — coeff[0] maps to val[0] = index % base - offset.
     return tuple(values)
 
 

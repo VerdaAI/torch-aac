@@ -18,8 +18,19 @@ import torch
 
 from torch_aac.config import QuantMode
 
-SF_OFFSET = 100
-"""Scalefactor offset constant from ISO 14496-3."""
+SF_OFFSET = 140
+"""Scalefactor offset (SCALE_ONE_POS) from FFmpeg/ISO 14496-3.
+
+This is the scalefactor index where the reconstructed scale = 1.0:
+    step = 2^(0.25 * (global_gain - SF_OFFSET))
+
+At global_gain = 140 (SCALE_ONE_POS), the encoder's quantizer step
+matches the decoder's dequantization scale of 1.0.
+
+Note: FFmpeg defines POW_SF2_ZERO=200 (index in pow2sf_tab where
+pow(2,0)=1.0) and SCALE_ONE_POS=140 (scalefactor for unity scale).
+The decoder computes: scale = pow2sf_tab[sf + 200 - 140] = pow2sf_tab[sf + 60].
+"""
 
 
 def compute_quantizer_step(global_gain: torch.Tensor) -> torch.Tensor:
@@ -132,22 +143,22 @@ def estimate_bit_count(
     abs_q = torch.abs(quantized)
 
     # Approximate Huffman cost per coefficient.
-    # This drives the rate control loop — must be conservative (overestimate)
-    # to avoid producing frames that overflow the decoder's escape limit.
+    # This drives the rate control binary search. Should be reasonably
+    # accurate to avoid under/over-quantization.
     #
-    # Cost model:
-    # - Zero: ~0.5 bits (section/codebook overhead amortized)
-    # - Small (1-16): Huffman code (~4-10 bits) + sign bit
-    # - Large (>16): Huffman(16) + escape(N ones + 0 + N+4 bits) + sign bit
-    #   where N = ceil(log2(|q|)) - 3. Total ≈ 2*log2(|q|) + 10 bits.
+    # Cost model based on typical AAC Huffman code lengths:
+    # - Zero: ~0.25 bits (most bands are zero, section overhead is small)
+    # - Small (1-4): ~4-6 bits (Huffman code + sign)
+    # - Medium (5-16): ~6-10 bits
+    # - Large (>16): escape codes ~2*log2(val) + 8 bits
     log_q = torch.log2(abs_q + 1.0)
     cost = torch.where(
         abs_q < 0.5,
-        torch.full_like(abs_q, 0.5),
+        torch.full_like(abs_q, 0.25),
         torch.where(
             abs_q <= 16.0,
-            log_q + 5.0,
-            log_q * 2.5 + 12.0,  # escape codes: very expensive
+            log_q + 4.0,
+            log_q * 2.0 + 8.0,
         ),
     )
 
