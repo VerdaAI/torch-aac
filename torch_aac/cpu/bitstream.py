@@ -254,14 +254,16 @@ def _write_ics(
         # --- scalefactor_data ---
         _write_scalefactor_data(writer, max_sfb, active_codebooks)
 
-        # --- spectral_data ---
-        _write_spectral_data(writer, quantized, active_codebooks, sfb_offsets, huffman_encode_fn)
+    # --- pulse, TNS, gain control flags (BEFORE spectral data!) ---
+    # Per ISO 14496-3 and FFmpeg's aacdec.c, these flags come after
+    # scalefactor_data but BEFORE spectral_data.
+    writer.write_bits(0, 1)       # pulse_data_present: 0
+    writer.write_bits(0, 1)       # tns_data_present: 0
+    writer.write_bits(0, 1)       # gain_control_data_present: 0
 
-    # --- ICS trailer: pulse, TNS, gain control flags ---
-    # These MUST be present after spectral_data (ISO 14496-3, 4.4.2.1)
-    writer.write_bits(0, 1)       # pulse_data_present: 0 (no pulse data)
-    writer.write_bits(0, 1)       # tns_data_present: 0 (no TNS)
-    writer.write_bits(0, 1)       # gain_control_data_present: 0 (no gain control)
+    if max_sfb > 0:
+        # --- spectral_data (AFTER pulse/tns/gain flags) ---
+        _write_spectral_data(writer, quantized, active_codebooks, sfb_offsets, huffman_encode_fn)
 
 
 def _write_zero_frame_data(

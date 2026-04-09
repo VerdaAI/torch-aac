@@ -17,7 +17,7 @@ from torch_aac.gpu.quantizer import estimate_bit_count, quantize
 # MIN_GAIN must be high enough that quantized values stay within escape code
 # limits (max ~4095 for AAC). For typical audio (MDCT max ~500), gain ≥ 80
 # keeps max_q under 4095. We use 60 as a safe minimum.
-MIN_GAIN = 100
+MIN_GAIN = 110
 MAX_GAIN = 255
 MAX_ITERATIONS = 12  # log2(255-60) ≈ 8, use 12 for safety
 
