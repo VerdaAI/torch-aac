@@ -17,10 +17,10 @@ def device() -> torch.device:
 
 @pytest.fixture
 def sine_wave_mono() -> np.ndarray:
-    """Generate a 1-second mono 1kHz sine wave at 48kHz."""
+    """Generate a 1-second mono 440Hz sine wave at 48kHz."""
     sr = 48000
     t = np.arange(sr, dtype=np.float32) / sr
-    return (0.5 * np.sin(2 * math.pi * 1000 * t)).astype(np.float32)
+    return (0.5 * np.sin(2 * math.pi * 440 * t)).astype(np.float32)
 
 
 @pytest.fixture
