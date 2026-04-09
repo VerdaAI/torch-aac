@@ -218,7 +218,16 @@ def _write_ics(
         - scalefactor_data
         - spectral_data
     """
-    num_sfb = len(sfb_offsets) - 1
+    num_sfb_total = len(sfb_offsets) - 1
+
+    # Determine effective max_sfb: highest band with non-zero codebook.
+    # This reduces bitstream overhead and matches FFmpeg's behavior.
+    max_sfb = 0
+    for i in range(num_sfb_total):
+        if int(codebook_indices[i]) != 0:
+            max_sfb = i + 1
+    # Use at least 1 band if any content, cap at total bands
+    max_sfb = min(max_sfb, num_sfb_total)
 
     # global_gain (8 bits)
     writer.write_bits(global_gain & 0xFF, 8)
@@ -228,17 +237,24 @@ def _write_ics(
     writer.write_bits(0, 2)       # window_sequence: ONLY_LONG_SEQUENCE
     writer.write_bits(1, 1)       # window_shape: sine
 
-    writer.write_bits(num_sfb, 6) # max_sfb
+    writer.write_bits(max_sfb, 6) # max_sfb (only bands with content)
     writer.write_bits(0, 1)       # predictor_data_present: 0
 
-    # --- section_data ---
-    _write_section_data(writer, codebook_indices, num_sfb)
+    if max_sfb == 0:
+        # No spectral content: just write trailer bits
+        pass
+    else:
+        # Use only the first max_sfb bands for section/sf/spectral data
+        active_codebooks = codebook_indices[:max_sfb]
 
-    # --- scalefactor_data ---
-    _write_scalefactor_data(writer, num_sfb, codebook_indices)
+        # --- section_data ---
+        _write_section_data(writer, active_codebooks, max_sfb)
 
-    # --- spectral_data ---
-    _write_spectral_data(writer, quantized, codebook_indices, sfb_offsets, huffman_encode_fn)
+        # --- scalefactor_data ---
+        _write_scalefactor_data(writer, max_sfb, active_codebooks)
+
+        # --- spectral_data ---
+        _write_spectral_data(writer, quantized, active_codebooks, sfb_offsets, huffman_encode_fn)
 
     # --- ICS trailer: pulse, TNS, gain control flags ---
     # These MUST be present after spectral_data (ISO 14496-3, 4.4.2.1)
@@ -344,7 +360,7 @@ def _write_spectral_data(
         sfb_offsets: SFB offset table.
         huffman_encode_fn: Callable that encodes spectral values.
     """
-    num_sfb = len(sfb_offsets) - 1
+    num_sfb = len(codebook_indices)
 
     for i in range(num_sfb):
         cb = int(codebook_indices[i])
