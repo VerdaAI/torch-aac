@@ -1,9 +1,11 @@
 """GPU-parallel rate control via binary search on global gain.
 
-Rate control finds the global_gain value per frame such that the quantized
-coefficients fit within the target bit budget. This implementation runs the
-entire binary search on GPU for all frames simultaneously, avoiding GPU↔CPU
-round-trips.
+Rate control finds the optimal global_gain per frame. The search balances
+two constraints:
+1. Bit budget: estimated bits must fit within the target frame size
+2. Value range: quantized values must stay within ±4095 (escape code limit)
+
+The search finds the LOWEST gain (best quality) satisfying both constraints.
 """
 
 from __future__ import annotations
@@ -13,13 +15,11 @@ import torch
 from torch_aac.config import QuantMode
 from torch_aac.gpu.quantizer import estimate_bit_count, quantize
 
-# Default search parameters
-# MIN_GAIN must be high enough that quantized values stay within escape code
-# limits (max ~4095 for AAC). For typical audio (MDCT max ~500), gain ≥ 80
-# keeps max_q under 4095. We use 60 as a safe minimum.
-MIN_GAIN = 128
+# Search parameters
+MIN_GAIN = 0
 MAX_GAIN = 255
-MAX_ITERATIONS = 12  # log2(255-60) ≈ 8, use 12 for safety
+MAX_ITERATIONS = 12
+MAX_QUANTIZED_VALUE = 4095  # AAC escape code limit
 
 
 def find_global_gain(
@@ -32,13 +32,13 @@ def find_global_gain(
 ) -> torch.Tensor:
     """Find optimal global_gain per frame via parallel binary search.
 
-    For each frame, searches for the smallest global_gain that produces a
-    quantized representation fitting within the target bit budget.
+    Finds the lowest gain (finest quantization, best quality) where:
+    - Estimated bit count ≤ target_bits
+    - Max quantized value ≤ MAX_QUANTIZED_VALUE (4095)
 
     Args:
         mdct_coeffs: MDCT coefficients, shape ``(B, C, 1024)`` or ``(B, 1024)``.
-        target_bits: Target bits per frame. Can be a scalar or per-frame tensor
-            of shape ``(B,)``.
+        target_bits: Target bits per frame.
         quant_mode: Quantization mode.
         min_gain: Minimum gain search bound.
         max_gain: Maximum gain search bound.
@@ -55,25 +55,28 @@ def find_global_gain(
     elif target_bits.dim() == 0:
         target_bits = target_bits.expand(B)
 
-    # Initialize binary search bounds for all frames
     lo = torch.full((B,), min_gain, device=device, dtype=torch.float32)
     hi = torch.full((B,), max_gain, device=device, dtype=torch.float32)
 
     for _ in range(max_iterations):
         mid = torch.floor((lo + hi) / 2.0)
 
-        # Quantize all frames with current gain candidates
         q = quantize(mdct_coeffs, mid, mode=quant_mode)
 
-        # Estimate bit counts — sum over channels if multi-channel
+        # Check bit budget
         bits = estimate_bit_count(q)
         if bits.dim() > 1:
-            # Sum across channels: (B, C) → (B,)
             bits = bits.sum(dim=-1)
 
-        # Update bounds: if too many bits, increase gain (coarser quantization)
-        too_many = bits > target_bits
-        lo = torch.where(too_many, mid + 1.0, lo)
-        hi = torch.where(~too_many, mid, hi)
+        # Check value range (max absolute quantized value per frame)
+        if q.dim() == 3:
+            max_q = q.abs().reshape(B, -1).max(dim=-1).values
+        else:
+            max_q = q.abs().max(dim=-1).values
+
+        # A gain is too low if: too many bits OR values overflow
+        too_low = (bits > target_bits) | (max_q > MAX_QUANTIZED_VALUE)
+        lo = torch.where(too_low, mid + 1.0, lo)
+        hi = torch.where(~too_low, mid, hi)
 
     return lo.to(torch.int64)
