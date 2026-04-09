@@ -223,7 +223,7 @@ def _write_ics(
     # Determine effective max_sfb: highest band with SIGNIFICANT content.
     # Cap at 40 bands to avoid high-frequency bands where small quantization
     # residuals produce unreliable Huffman codes. FFmpeg typically uses 22-34.
-    MAX_SFB_LIMIT = 12
+    MAX_SFB_LIMIT = 35
     max_sfb = 0
     for i in range(min(num_sfb_total, MAX_SFB_LIMIT)):
         if int(codebook_indices[i]) != 0:
