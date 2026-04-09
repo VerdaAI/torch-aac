@@ -220,14 +220,15 @@ def _write_ics(
     """
     num_sfb_total = len(sfb_offsets) - 1
 
-    # Determine effective max_sfb: highest band with non-zero codebook.
-    # This reduces bitstream overhead and matches FFmpeg's behavior.
+    # Determine effective max_sfb: highest band with SIGNIFICANT content.
+    # Cap at 40 bands to avoid high-frequency bands where small quantization
+    # residuals produce unreliable Huffman codes. FFmpeg typically uses 22-34.
+    MAX_SFB_LIMIT = 12
     max_sfb = 0
-    for i in range(num_sfb_total):
+    for i in range(min(num_sfb_total, MAX_SFB_LIMIT)):
         if int(codebook_indices[i]) != 0:
             max_sfb = i + 1
-    # Use at least 1 band if any content, cap at total bands
-    max_sfb = min(max_sfb, num_sfb_total)
+    max_sfb = min(max_sfb, MAX_SFB_LIMIT)
 
     # global_gain (8 bits)
     writer.write_bits(global_gain & 0xFF, 8)

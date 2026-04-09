@@ -614,9 +614,9 @@ def _index_to_values(book: int, index: int) -> tuple[int, ...]:
     for _ in range(dim):
         values.append(remaining % base - offset)
         remaining //= base
-    # The index encodes values in reverse order (least-significant position first
-    # in the FFmpeg/ISO layout), so reverse to get natural order.
-    values.reverse()
+    # FFmpeg's decoder extracts values in this order (LSB first), so the encoder
+    # must look up values in the SAME order. Do NOT reverse — the "first"
+    # spectral coefficient maps to values[0] = index % base - offset.
     return tuple(values)
 
 
