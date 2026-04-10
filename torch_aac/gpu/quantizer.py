@@ -18,26 +18,35 @@ import torch
 
 from torch_aac.config import QuantMode
 
-SF_OFFSET = 140
-"""Scalefactor offset (SCALE_ONE_POS) from FFmpeg/ISO 14496-3.
+SF_OFFSET = 100
+"""Scalefactor zero-point for the AAC quantizer.
 
-This is the scalefactor index where the reconstructed scale = 1.0:
-    step = 2^(0.25 * (global_gain - SF_OFFSET))
+The AAC encoder quantizes as:
+    q = nint(|x|^(3/4) / pow34sf(sf))
+where pow34sf(sf) = 2^(3/16 * (sf - SF_OFFSET))
 
-At global_gain = 140 (SCALE_ONE_POS), the encoder's quantizer step
-matches the decoder's dequantization scale of 1.0.
+The AAC decoder dequantizes as:
+    x_hat = |q|^(4/3) * pow2sf(sf)
+where pow2sf(sf) = 2^(1/4 * (sf - SF_OFFSET))
 
-Note: FFmpeg defines POW_SF2_ZERO=200 (index in pow2sf_tab where
-pow(2,0)=1.0) and SCALE_ONE_POS=140 (scalefactor for unity scale).
-The decoder computes: scale = pow2sf_tab[sf + 200 - 140] = pow2sf_tab[sf + 60].
+These are DIFFERENT functions (pow34 vs pow2), designed so that
+|x|^0.75 / pow34 → round → ^(4/3) * pow2 ≈ |x| for the quantization
+to be approximately lossless.
 """
 
 
 def compute_quantizer_step(global_gain: torch.Tensor) -> torch.Tensor:
-    """Compute the quantizer step size from global gain.
+    """Compute the quantizer step from scalefactor.
+
+    Uses pow2sf: step = 2^(0.25 * (sf - 100))
+    The AAC dequantizer reconstructs: x_hat = q^(4/3) * step
+
+    Note: FFmpeg uses pre-computed tables (ff_aac_pow2sf_tab and
+    ff_aac_codebook_vector_vals) for optimized dequantization.
+    Our encoder uses this step for quantization: q = |x|^(3/4) / step
 
     Args:
-        global_gain: Integer gain values, shape ``(B,)`` or scalar.
+        global_gain: Scalefactor values, shape ``(B,)`` or scalar.
 
     Returns:
         Step sizes, same shape as input.
@@ -94,32 +103,41 @@ def quantize(
     return signs * quantized
 
 
+def compute_decoder_scale(scalefactor: torch.Tensor) -> torch.Tensor:
+    """Compute the decoder dequantization scale (pow2sf).
+
+    pow2sf(sf) = 2^(1/4 * (sf - 100))
+
+    This is what the DECODER uses for reconstruction.
+    """
+    return torch.pow(2.0, 0.25 * (scalefactor.float() - SF_OFFSET))
+
+
 def dequantize(
     quantized: torch.Tensor,
     global_gain: torch.Tensor,
 ) -> torch.Tensor:
     """Inverse quantize: reconstruct approximate MDCT coefficients.
 
-    x_hat = sign(q) * |q|^(4/3) * step
+    Uses the DECODER formula: x_hat = sign(q) * |q|^(4/3) * pow2sf(sf)
+    where pow2sf(sf) = 2^(1/4 * (sf - 100))
 
     Args:
         quantized: Quantized coefficients.
-        global_gain: Per-frame global gain.
+        global_gain: Per-frame global gain (scalefactor).
 
     Returns:
         Reconstructed MDCT coefficients, same shape as quantized.
     """
-    step = compute_quantizer_step(global_gain)
-    while step.dim() < quantized.dim():
-        step = step.unsqueeze(-1)
+    scale = compute_decoder_scale(global_gain)
+    while scale.dim() < quantized.dim():
+        scale = scale.unsqueeze(-1)
 
     signs = torch.sign(quantized)
     abs_q = torch.abs(quantized)
-
-    # Inverse of |x|^(3/4): |q|^(4/3)
     decompressed = torch.pow(abs_q + 1e-10, 4.0 / 3.0)
 
-    return signs * decompressed * step
+    return signs * decompressed * scale
 
 
 def quantize_per_band(
