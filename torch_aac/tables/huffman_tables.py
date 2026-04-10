@@ -614,11 +614,13 @@ def _index_to_values(book: int, index: int) -> tuple[int, ...]:
     for _ in range(dim):
         values.append(remaining % base - offset)
         remaining //= base
-    # FFmpeg's decoder extracts values as:
-    #   off[j] = (index / base^j) % base - offset
-    # where j=0 gives coeff[0], j=1 gives coeff[1], etc.
-    # This matches our LSB-first extraction: val[0] = index % base - offset.
-    # Do NOT reverse — coeff[0] maps to val[0] = index % base - offset.
+    # Verified against FFmpeg's ff_aac_codebook_vector_idx table:
+    # Index 67 → codebook_vector02_idx[67] = 0xf456 → positions (2,1,1,1)
+    # → values (+1, 0, 0, 0) where coeff[0]=+1.
+    # Mathematically: 67 = 2*27 + 1*9 + 1*3 + 1
+    # So coeff[0] = (67/27)%3-1 = 2-1 = 1 (MSB-first ordering)
+    # Our extraction gives [LSB, ..., MSB], so reverse for coeff[0..dim-1]:
+    values.reverse()
     return tuple(values)
 
 
