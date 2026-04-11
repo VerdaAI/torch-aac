@@ -176,14 +176,13 @@ class AACEncoder:
         # Rearrange to (B, C, 1024) for quantizer
         mdct_coeffs = mdct_coeffs.permute(1, 0, 2)  # (B, C, 1024)
 
-        # 3. Rate control: find global gain per frame
+        # 3. Rate control: find global gain per frame (uniform sf across bands).
+        # The psychoacoustic-driven per-band variant in find_scalefactors
+        # is experimental and not yet on the critical path — see A23 notes.
         target = torch.full(
             (B,), self._target_bits / max(C, 1), device=self._device, dtype=torch.float32
         )
-        global_gains = find_global_gain(mdct_coeffs, target)  # (B,)
-
-        # 4. Compute per-band scalefactors for optimal reconstruction
-        # Shape: (B, C, num_sfb) or (B, num_sfb)
+        global_gains = find_global_gain(mdct_coeffs, target)
         scalefactors = compute_scalefactors(mdct_coeffs, global_gains, self._sfb_offsets)
 
         # 5. Quantize using per-band scalefactors
