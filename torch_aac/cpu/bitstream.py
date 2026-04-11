@@ -130,8 +130,15 @@ def write_single_channel_element(
     # id_syn_ele: ID_SCE = 0 (3 bits)
     writer.write_bits(0b000, 3)
     writer.write_bits(0, 4)
-    _write_ics(writer, quantized, global_gain, codebook_indices, sfb_offsets,
-               huffman_encode_fn, scalefactors)
+    _write_ics(
+        writer,
+        quantized,
+        global_gain,
+        codebook_indices,
+        sfb_offsets,
+        huffman_encode_fn,
+        scalefactors,
+    )
 
 
 def write_channel_pair_element(
@@ -152,10 +159,24 @@ def write_channel_pair_element(
     writer.write_bits(0, 4)
     writer.write_bits(0, 1)  # common_window=0
 
-    _write_ics(writer, quantized_l, global_gain_l, codebook_indices_l,
-               sfb_offsets, huffman_encode_fn, scalefactors_l)
-    _write_ics(writer, quantized_r, global_gain_r, codebook_indices_r,
-               sfb_offsets, huffman_encode_fn, scalefactors_r)
+    _write_ics(
+        writer,
+        quantized_l,
+        global_gain_l,
+        codebook_indices_l,
+        sfb_offsets,
+        huffman_encode_fn,
+        scalefactors_l,
+    )
+    _write_ics(
+        writer,
+        quantized_r,
+        global_gain_r,
+        codebook_indices_r,
+        sfb_offsets,
+        huffman_encode_fn,
+        scalefactors_r,
+    )
 
 
 def _write_ics(
@@ -184,12 +205,12 @@ def _write_ics(
     writer.write_bits(global_gain & 0xFF, 8)
 
     # --- ics_info ---
-    writer.write_bits(0, 1)       # ics_reserved_bit
-    writer.write_bits(0, 2)       # window_sequence: ONLY_LONG_SEQUENCE
-    writer.write_bits(0, 1)       # window_shape: 0=sine, 1=KBD
+    writer.write_bits(0, 1)  # ics_reserved_bit
+    writer.write_bits(0, 2)  # window_sequence: ONLY_LONG_SEQUENCE
+    writer.write_bits(0, 1)  # window_shape: 0=sine, 1=KBD
 
-    writer.write_bits(max_sfb, 6) # max_sfb (only bands with content)
-    writer.write_bits(0, 1)       # predictor_data_present: 0
+    writer.write_bits(max_sfb, 6)  # max_sfb (only bands with content)
+    writer.write_bits(0, 1)  # predictor_data_present: 0
 
     if max_sfb == 0:
         # No spectral content: just write trailer bits
@@ -208,9 +229,9 @@ def _write_ics(
     # --- pulse, TNS, gain control flags (BEFORE spectral data!) ---
     # Per ISO 14496-3 and FFmpeg's aacdec.c, these flags come after
     # scalefactor_data but BEFORE spectral_data.
-    writer.write_bits(0, 1)       # pulse_data_present: 0
-    writer.write_bits(0, 1)       # tns_data_present: 0
-    writer.write_bits(0, 1)       # gain_control_data_present: 0
+    writer.write_bits(0, 1)  # pulse_data_present: 0
+    writer.write_bits(0, 1)  # tns_data_present: 0
+    writer.write_bits(0, 1)  # gain_control_data_present: 0
 
     if max_sfb > 0:
         # --- spectral_data (AFTER pulse/tns/gain flags) ---
@@ -294,10 +315,7 @@ def _write_scalefactor_data(
     for i in range(num_sfb):
         if int(codebook_indices[i]) == 0:
             continue
-        if scalefactors is not None:
-            sf = int(scalefactors[i])
-        else:
-            sf = global_gain
+        sf = int(scalefactors[i]) if scalefactors is not None else global_gain
         delta = sf - prev_sf
         # Clamp delta to valid range [-60, 60]
         delta = max(-60, min(60, delta))
@@ -423,18 +441,25 @@ def build_adts_frame(
         assert codebook_indices_r is not None
         write_channel_pair_element(
             payload_writer,
-            quantized, quantized_r,
-            global_gain, global_gain_r,
-            codebook_indices, codebook_indices_r,
-            sfb_offsets, huffman_encode_fn,
+            quantized,
+            quantized_r,
+            global_gain,
+            global_gain_r,
+            codebook_indices,
+            codebook_indices_r,
+            sfb_offsets,
+            huffman_encode_fn,
             scalefactors_l=scalefactors,
             scalefactors_r=scalefactors_r,
         )
     else:
         write_single_channel_element(
             payload_writer,
-            quantized, global_gain, codebook_indices,
-            sfb_offsets, huffman_encode_fn,
+            quantized,
+            global_gain,
+            codebook_indices,
+            sfb_offsets,
+            huffman_encode_fn,
             scalefactors=scalefactors,
         )
 

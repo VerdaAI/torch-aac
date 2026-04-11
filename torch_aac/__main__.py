@@ -32,23 +32,31 @@ def main() -> None:
     parser.add_argument("-i", "--input", help="Input WAV file path")
     parser.add_argument("-o", "--output", help="Output AAC file path")
     parser.add_argument(
-        "-b", "--bitrate", default="128k",
+        "-b",
+        "--bitrate",
+        default="128k",
         help="Target bitrate (e.g., 128k, 320000). Default: 128k",
     )
     parser.add_argument(
-        "--sample-rate", type=int, default=48000,
+        "--sample-rate",
+        type=int,
+        default=48000,
         help="Sample rate in Hz (for pipe mode). Default: 48000",
     )
     parser.add_argument(
-        "--channels", type=int, default=1,
+        "--channels",
+        type=int,
+        default=1,
         help="Number of channels (for pipe mode). Default: 1",
     )
     parser.add_argument(
-        "--device", default="auto",
+        "--device",
+        default="auto",
         help="PyTorch device (auto, cuda, cpu). Default: auto",
     )
     parser.add_argument(
-        "--version", action="version",
+        "--version",
+        action="version",
         version=f"%(prog)s {_get_version()}",
     )
 

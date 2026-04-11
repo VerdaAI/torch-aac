@@ -44,8 +44,8 @@ class TestMDCT:
         x = torch.randn(8, 2048, device=device)
         windowed = apply_window(x)
         coeffs = mdct(windowed)
-        time_energy = (windowed ** 2).sum(dim=-1)
-        freq_energy = (coeffs ** 2).sum(dim=-1)
+        time_energy = (windowed**2).sum(dim=-1)
+        freq_energy = (coeffs**2).sum(dim=-1)
         ratio = freq_energy / (time_energy + 1e-10)
         # Ratio should be consistent (same normalization for all frames)
         # The MDCT has a known energy scaling factor of ~N/2
@@ -83,9 +83,7 @@ class TestIMDCT:
             original = signal[0, start:end]
             recon = reconstructed[0, start:end]
             # Correlation should be high (not exact due to normalization)
-            corr = torch.nn.functional.cosine_similarity(
-                original.unsqueeze(0), recon.unsqueeze(0)
-            )
+            corr = torch.nn.functional.cosine_similarity(original.unsqueeze(0), recon.unsqueeze(0))
             assert corr.item() > 0.9, f"Reconstruction correlation too low: {corr.item()}"
 
 

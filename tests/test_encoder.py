@@ -101,13 +101,20 @@ class TestEncoderWithFFmpeg:
         wav_path = aac_path.replace(".aac", "_out.wav")
         try:
             # Convert to WAV with error tolerance
-            result = subprocess.run(
+            subprocess.run(
                 [
-                    "ffmpeg", "-y",
-                    "-err_detect", "ignore_err",
-                    "-max_error_rate", "1.0",
-                    "-i", aac_path,
-                    "-ar", "48000", "-ac", "1",
+                    "ffmpeg",
+                    "-y",
+                    "-err_detect",
+                    "ignore_err",
+                    "-max_error_rate",
+                    "1.0",
+                    "-i",
+                    aac_path,
+                    "-ar",
+                    "48000",
+                    "-ac",
+                    "1",
                     wav_path,
                 ],
                 capture_output=True,
@@ -141,9 +148,12 @@ class TestEncoderWithFFmpeg:
             result = subprocess.run(
                 [
                     "ffprobe",
-                    "-v", "error",
-                    "-show_entries", "stream=codec_name,sample_rate,channels",
-                    "-of", "csv=p=0",
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "stream=codec_name,sample_rate,channels",
+                    "-of",
+                    "csv=p=0",
                     aac_path,
                 ],
                 capture_output=True,

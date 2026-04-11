@@ -60,8 +60,11 @@ class TestDifferentiableGradients:
     def test_gradient_flows_ste(self) -> None:
         """Gradients should flow through in STE mode."""
         codec = DifferentiableAAC(
-            sample_rate=48000, bitrate=128000, channels=1,
-            quant_mode="ste", device="cpu",
+            sample_rate=48000,
+            bitrate=128000,
+            channels=1,
+            quant_mode="ste",
+            device="cpu",
         )
         audio = torch.randn(1, 1, 4800, requires_grad=True)
         output = codec(audio)
@@ -74,8 +77,11 @@ class TestDifferentiableGradients:
     def test_gradient_flows_noise(self) -> None:
         """Gradients should flow through in noise mode."""
         codec = DifferentiableAAC(
-            sample_rate=48000, bitrate=128000, channels=1,
-            quant_mode="noise", device="cpu",
+            sample_rate=48000,
+            bitrate=128000,
+            channels=1,
+            quant_mode="noise",
+            device="cpu",
         )
         audio = torch.randn(1, 1, 4800, requires_grad=True)
         output = codec(audio)
@@ -87,12 +93,15 @@ class TestDifferentiableGradients:
     def test_gradient_magnitude_reasonable(self) -> None:
         """Gradients should not explode or vanish."""
         codec = DifferentiableAAC(
-            sample_rate=48000, bitrate=128000, channels=1,
-            quant_mode="ste", device="cpu",
+            sample_rate=48000,
+            bitrate=128000,
+            channels=1,
+            quant_mode="ste",
+            device="cpu",
         )
         audio = (torch.randn(4800) * 0.5).detach().requires_grad_(True)
         output = codec(audio)
-        loss = (output ** 2).mean()
+        loss = (output**2).mean()
         loss.backward()
         assert audio.grad is not None, "Gradient is None"
         grad_mean = audio.grad.abs().mean().item()
@@ -101,8 +110,11 @@ class TestDifferentiableGradients:
     def test_gradient_changes_with_input(self) -> None:
         """Different inputs should produce different gradients."""
         codec = DifferentiableAAC(
-            sample_rate=48000, bitrate=128000, channels=1,
-            quant_mode="ste", device="cpu",
+            sample_rate=48000,
+            bitrate=128000,
+            channels=1,
+            quant_mode="ste",
+            device="cpu",
         )
 
         audio1 = (torch.randn(4800) * 0.1).detach().requires_grad_(True)
@@ -121,8 +133,11 @@ class TestDifferentiableTraining:
     def test_optimization_step_changes_params(self) -> None:
         """An optimization step through DifferentiableAAC should update parameters."""
         codec = DifferentiableAAC(
-            sample_rate=48000, bitrate=128000, channels=1,
-            quant_mode="ste", device="cpu",
+            sample_rate=48000,
+            bitrate=128000,
+            channels=1,
+            quant_mode="ste",
+            device="cpu",
         )
 
         # Simple learnable gain
@@ -135,7 +150,7 @@ class TestDifferentiableTraining:
         optimizer.zero_grad()
         scaled = audio * gain
         coded = codec(scaled)
-        loss = (coded ** 2).mean()
+        loss = (coded**2).mean()
         loss.backward()
         optimizer.step()
 
@@ -148,8 +163,11 @@ class TestDifferentiableTraining:
     def test_rate_loss(self) -> None:
         """return_rate_loss should return a second tensor."""
         codec = DifferentiableAAC(
-            sample_rate=48000, bitrate=128000, channels=1,
-            quant_mode="ste", device="cpu",
+            sample_rate=48000,
+            bitrate=128000,
+            channels=1,
+            quant_mode="ste",
+            device="cpu",
         )
         audio = torch.randn(1, 1, 4800)
         result = codec(audio, return_rate_loss=True)

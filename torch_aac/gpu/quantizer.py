@@ -165,7 +165,6 @@ def quantize_per_band(
     Returns:
         Quantized coefficients, same shape as mdct_coeffs.
     """
-    device = mdct_coeffs.device
     result = torch.zeros_like(mdct_coeffs)
     num_sfb = len(sfb_offsets) - 1
 
@@ -173,7 +172,6 @@ def quantize_per_band(
     flat_coeffs = mdct_coeffs.reshape(-1, 1024)
     flat_result = result.reshape(-1, 1024)
     flat_sf = scalefactors.reshape(-1, num_sfb)
-    N = flat_coeffs.shape[0]
 
     for i in range(num_sfb):
         s, e = sfb_offsets[i], sfb_offsets[i + 1]

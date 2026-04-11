@@ -107,8 +107,10 @@ class DifferentiableAAC(nn.Module):
             # Find global gain (detached — rate control is not differentiable)
             with torch.no_grad():
                 target = torch.full(
-                    (num_frames,), self._target_bits / max(C, 1),
-                    device=audio.device, dtype=torch.float32,
+                    (num_frames,),
+                    self._target_bits / max(C, 1),
+                    device=audio.device,
+                    dtype=torch.float32,
                 )
                 gains = find_global_gain(coeffs_bc, target, quant_mode=QuantMode.HARD)
 

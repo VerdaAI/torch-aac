@@ -18,12 +18,17 @@ CODEBOOK_DIMS = [0, 4, 4, 4, 4, 2, 2, 2, 2, 2, 2, 2]
 CODEBOOK_MAX_ABS = [0, 1, 1, 2, 2, 4, 4, 7, 7, 12, 12, 16]
 CODEBOOK_IS_UNSIGNED = [
     False,  # 0: unused
-    False, False,   # 1-2: signed quads, values {-1,0,1} encoded directly
-    True, True,     # 3-4: unsigned quads, max 2 (separate sign bits)
-    False, False,   # 5-6: signed pairs, values {-4..4} encoded directly
-    True, True,     # 7-8: unsigned pairs (separate sign bits)
-    True, True,     # 9-10: unsigned pairs (separate sign bits)
-    True,           # 11: unsigned pairs, escape (separate sign bits)
+    False,
+    False,  # 1-2: signed quads, values {-1,0,1} encoded directly
+    True,
+    True,  # 3-4: unsigned quads, max 2 (separate sign bits)
+    False,
+    False,  # 5-6: signed pairs, values {-4..4} encoded directly
+    True,
+    True,  # 7-8: unsigned pairs (separate sign bits)
+    True,
+    True,  # 9-10: unsigned pairs (separate sign bits)
+    True,  # 11: unsigned pairs, escape (separate sign bits)
 ]
 
 # Average bits per coefficient for each codebook at various max_abs values.
@@ -31,21 +36,67 @@ CODEBOOK_IS_UNSIGNED = [
 # Index: [codebook][max_abs_in_section] → approximate bits/coefficient
 # These are rough averages; exact costs depend on actual value distribution.
 APPROX_BITS_PER_COEFF: list[list[float]] = [
-    [],                                                    # 0: unused
-    [1.0, 2.0],                                           # 1: max_abs ≤ 1
-    [0.8, 1.8],                                           # 2: max_abs ≤ 1
-    [1.5, 2.5, 4.0],                                     # 3: max_abs ≤ 2
-    [1.2, 2.2, 3.5],                                     # 4: max_abs ≤ 2
-    [2.0, 2.5, 3.0, 3.5, 4.0, 5.0],                     # 5: max_abs ≤ 4
-    [1.8, 2.3, 2.8, 3.3, 3.8, 4.8],                     # 6: max_abs ≤ 4
-    [2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 7.0],     # 7: max_abs ≤ 7
-    [2.3, 2.8, 3.3, 3.8, 4.3, 4.8, 5.3, 5.8, 6.8],     # 8: max_abs ≤ 7
-    [3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0,      # 9: max_abs ≤ 12
-     7.5, 8.0, 8.5, 9.0, 10.0],
-    [2.8, 3.3, 3.8, 4.3, 4.8, 5.3, 5.8, 6.3, 6.8,      # 10: max_abs ≤ 12
-     7.3, 7.8, 8.3, 8.8, 9.8],
-    [3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 6.5, 7.0, 7.5,      # 11: max_abs ≤ 16+
-     8.0, 8.5, 9.0, 9.5, 10.0, 10.5, 11.0, 12.0, 14.0],
+    [],  # 0: unused
+    [1.0, 2.0],  # 1: max_abs ≤ 1
+    [0.8, 1.8],  # 2: max_abs ≤ 1
+    [1.5, 2.5, 4.0],  # 3: max_abs ≤ 2
+    [1.2, 2.2, 3.5],  # 4: max_abs ≤ 2
+    [2.0, 2.5, 3.0, 3.5, 4.0, 5.0],  # 5: max_abs ≤ 4
+    [1.8, 2.3, 2.8, 3.3, 3.8, 4.8],  # 6: max_abs ≤ 4
+    [2.5, 3.0, 3.5, 4.0, 4.5, 5.0, 5.5, 6.0, 7.0],  # 7: max_abs ≤ 7
+    [2.3, 2.8, 3.3, 3.8, 4.3, 4.8, 5.3, 5.8, 6.8],  # 8: max_abs ≤ 7
+    [
+        3.0,
+        3.5,
+        4.0,
+        4.5,
+        5.0,
+        5.5,
+        6.0,
+        6.5,
+        7.0,  # 9: max_abs ≤ 12
+        7.5,
+        8.0,
+        8.5,
+        9.0,
+        10.0,
+    ],
+    [
+        2.8,
+        3.3,
+        3.8,
+        4.3,
+        4.8,
+        5.3,
+        5.8,
+        6.3,
+        6.8,  # 10: max_abs ≤ 12
+        7.3,
+        7.8,
+        8.3,
+        8.8,
+        9.8,
+    ],
+    [
+        3.5,
+        4.0,
+        4.5,
+        5.0,
+        5.5,
+        6.0,
+        6.5,
+        7.0,
+        7.5,  # 11: max_abs ≤ 16+
+        8.0,
+        8.5,
+        9.0,
+        9.5,
+        10.0,
+        10.5,
+        11.0,
+        12.0,
+        14.0,
+    ],
 ]
 
 NUM_CODEBOOKS = 12  # 1-11, index 0 unused

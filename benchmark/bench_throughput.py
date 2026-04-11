@@ -119,13 +119,27 @@ def benchmark_ffmpeg(
             t0 = time.perf_counter()
             subprocess.run(
                 [
-                    "ffmpeg", "-y", "-loglevel", "error",
-                    "-f", "f32le", "-ar", str(sample_rate), "-ac", "1",
-                    "-i", "pipe:0",
-                    "-c:a", "aac", "-b:a", f"{bitrate//1000}k",
+                    "ffmpeg",
+                    "-y",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "f32le",
+                    "-ar",
+                    str(sample_rate),
+                    "-ac",
+                    "1",
+                    "-i",
+                    "pipe:0",
+                    "-c:a",
+                    "aac",
+                    "-b:a",
+                    f"{bitrate // 1000}k",
                     aac_path,
                 ],
-                input=pcm.tobytes(), capture_output=True, check=True,
+                input=pcm.tobytes(),
+                capture_output=True,
+                check=True,
             )
             t1 = time.perf_counter()
             times.append(t1 - t0)
@@ -143,23 +157,17 @@ def benchmark_ffmpeg(
 
 def main() -> None:
     parser = argparse.ArgumentParser(description="Throughput benchmark for torch-aac")
+    parser.add_argument("--quick", action="store_true", help="Quick test (10s audio only)")
     parser.add_argument(
-        "--quick", action="store_true", help="Quick test (10s audio only)"
-    )
-    parser.add_argument(
-        "--durations", type=float, nargs="+",
+        "--durations",
+        type=float,
+        nargs="+",
         default=[10.0, 60.0, 300.0, 3600.0],
         help="Audio durations to test (seconds)",
     )
-    parser.add_argument(
-        "--bitrate", type=int, default=128000, help="Target bitrate in bps"
-    )
-    parser.add_argument(
-        "--runs", type=int, default=3, help="Number of runs per config"
-    )
-    parser.add_argument(
-        "--output", type=str, default=None, help="Output JSON file"
-    )
+    parser.add_argument("--bitrate", type=int, default=128000, help="Target bitrate in bps")
+    parser.add_argument("--runs", type=int, default=3, help="Number of runs per config")
+    parser.add_argument("--output", type=str, default=None, help="Output JSON file")
     args = parser.parse_args()
 
     if args.quick:
@@ -183,25 +191,25 @@ def main() -> None:
         pcm = generate_test_audio(duration)
 
         # Benchmark torch-aac
-        ta_result = benchmark_torch_aac(
-            pcm, bitrate=args.bitrate, device=device, runs=args.runs
-        )
+        ta_result = benchmark_torch_aac(pcm, bitrate=args.bitrate, device=device, runs=args.runs)
         print(
             f"{duration:>8.0f}s    {ta_result.label:<15} "
             f"{ta_result.encode_time_sec:>10.4f}   "
             f"{ta_result.realtime_factor:>8.1f}x    "
             f"{ta_result.frames_per_sec:>10.0f}"
         )
-        results.append({
-            "label": ta_result.label,
-            "duration_sec": ta_result.duration_sec,
-            "encode_time_sec": ta_result.encode_time_sec,
-            "realtime_factor": ta_result.realtime_factor,
-            "frames_per_sec": ta_result.frames_per_sec,
-            "output_bytes": ta_result.output_bytes,
-            "device": device,
-            "gpu_name": gpu_name,
-        })
+        results.append(
+            {
+                "label": ta_result.label,
+                "duration_sec": ta_result.duration_sec,
+                "encode_time_sec": ta_result.encode_time_sec,
+                "realtime_factor": ta_result.realtime_factor,
+                "frames_per_sec": ta_result.frames_per_sec,
+                "output_bytes": ta_result.output_bytes,
+                "device": device,
+                "gpu_name": gpu_name,
+            }
+        )
 
         # Benchmark FFmpeg
         ff_result = benchmark_ffmpeg(pcm, bitrate=args.bitrate, runs=args.runs)
@@ -212,26 +220,32 @@ def main() -> None:
                 f"{ff_result.realtime_factor:>8.1f}x    "
                 f"{ff_result.frames_per_sec:>10.0f}"
             )
-            results.append({
-                "label": ff_result.label,
-                "duration_sec": ff_result.duration_sec,
-                "encode_time_sec": ff_result.encode_time_sec,
-                "realtime_factor": ff_result.realtime_factor,
-                "frames_per_sec": ff_result.frames_per_sec,
-                "output_bytes": ff_result.output_bytes,
-            })
+            results.append(
+                {
+                    "label": ff_result.label,
+                    "duration_sec": ff_result.duration_sec,
+                    "encode_time_sec": ff_result.encode_time_sec,
+                    "realtime_factor": ff_result.realtime_factor,
+                    "frames_per_sec": ff_result.frames_per_sec,
+                    "output_bytes": ff_result.output_bytes,
+                }
+            )
 
         print()
 
     if args.output:
         with open(args.output, "w") as f:
-            json.dump({
-                "device": device,
-                "gpu_name": gpu_name,
-                "bitrate": args.bitrate,
-                "runs": args.runs,
-                "results": results,
-            }, f, indent=2)
+            json.dump(
+                {
+                    "device": device,
+                    "gpu_name": gpu_name,
+                    "bitrate": args.bitrate,
+                    "runs": args.runs,
+                    "results": results,
+                },
+                f,
+                indent=2,
+            )
         print(f"Results saved to {args.output}")
 
 

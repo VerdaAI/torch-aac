@@ -11,7 +11,6 @@ Usage:
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import tempfile
 from pathlib import Path
@@ -58,19 +57,33 @@ def encode_decode_roundtrip(
     try:
         result = subprocess.run(
             [
-                "ffmpeg", "-y", "-v", "error",
-                "-err_detect", "ignore_err", "-max_error_rate", "1.0",
-                "-i", aac_path,
-                "-f", "f32le", "-ar", str(sample_rate), "-ac", "1", "pipe:1",
+                "ffmpeg",
+                "-y",
+                "-v",
+                "error",
+                "-err_detect",
+                "ignore_err",
+                "-max_error_rate",
+                "1.0",
+                "-i",
+                aac_path,
+                "-f",
+                "f32le",
+                "-ar",
+                str(sample_rate),
+                "-ac",
+                "1",
+                "pipe:1",
             ],
-            capture_output=True, timeout=30,
+            capture_output=True,
+            timeout=30,
         )
         decoded = (
             np.frombuffer(result.stdout, dtype=np.float32)
             if len(result.stdout) > 0
             else np.array([], dtype=np.float32)
         )
-        errors = len([l for l in result.stderr.decode().split("\n") if l.strip()])
+        errors = len([ln for ln in result.stderr.decode().split("\n") if ln.strip()])
     finally:
         Path(aac_path).unlink(missing_ok=True)
 
@@ -98,8 +111,8 @@ def compute_metrics(orig: np.ndarray, decoded: np.ndarray) -> dict[str, float]:
 
     orig_peak = np.abs(o).max() if len(o) > 0 else 1.0
     dec_peak = np.abs(d).max() if len(d) > 0 else 0.0
-    orig_rms = np.sqrt(np.mean(o ** 2)) if len(o) > 0 else 1.0
-    dec_rms = np.sqrt(np.mean(d ** 2)) if len(d) > 0 else 0.0
+    orig_rms = np.sqrt(np.mean(o**2)) if len(o) > 0 else 1.0
+    dec_rms = np.sqrt(np.mean(d**2)) if len(d) > 0 else 0.0
 
     peak_ratio = dec_peak / (orig_peak + 1e-10)
     rms_ratio = dec_rms / (orig_rms + 1e-10)
@@ -108,16 +121,13 @@ def compute_metrics(orig: np.ndarray, decoded: np.ndarray) -> dict[str, float]:
     if dec_rms > 1e-10 and orig_rms > 1e-10:
         d_normalized = d * (orig_rms / dec_rms)
         noise = d_normalized - o
-        noise_rms = np.sqrt(np.mean(noise ** 2))
+        noise_rms = np.sqrt(np.mean(noise**2))
         snr_db = 20 * np.log10(orig_rms / (noise_rms + 1e-10))
     else:
         snr_db = float("-inf")
 
     # Correlation
-    if dec_rms > 1e-10 and orig_rms > 1e-10:
-        correlation = float(np.corrcoef(o, d)[0, 1])
-    else:
-        correlation = 0.0
+    correlation = float(np.corrcoef(o, d)[0, 1]) if dec_rms > 1e-10 and orig_rms > 1e-10 else 0.0
 
     return {
         "peak_ratio": float(peak_ratio),
@@ -130,15 +140,21 @@ def compute_metrics(orig: np.ndarray, decoded: np.ndarray) -> dict[str, float]:
 def main() -> None:
     parser = argparse.ArgumentParser(description="Quality benchmark for torch-aac")
     parser.add_argument(
-        "--bitrates", type=int, nargs="+",
+        "--bitrates",
+        type=int,
+        nargs="+",
         default=[48000, 128000, 320000],
     )
     parser.add_argument(
-        "--signals", type=str, nargs="+",
+        "--signals",
+        type=str,
+        nargs="+",
         default=["sine_440", "sine_1khz", "chord", "noise"],
     )
     parser.add_argument(
-        "--duration", type=float, default=1.0,
+        "--duration",
+        type=float,
+        default=1.0,
     )
     args = parser.parse_args()
 
@@ -154,11 +170,11 @@ def main() -> None:
     for signal_kind in args.signals:
         pcm = generate_signal(signal_kind, args.duration)
         for bitrate in args.bitrates:
-            decoded, aac_size, errors = encode_decode_roundtrip(pcm, 48000, bitrate)
+            decoded, _aac_size, errors = encode_decode_roundtrip(pcm, 48000, bitrate)
             metrics = compute_metrics(pcm, decoded)
-            snr_str = f"{metrics['snr_db']:.1f}" if metrics['snr_db'] > -900 else "-inf"
+            snr_str = f"{metrics['snr_db']:.1f}" if metrics["snr_db"] > -900 else "-inf"
             print(
-                f"{signal_kind:<12} {bitrate//1000:>4}k      "
+                f"{signal_kind:<12} {bitrate // 1000:>4}k      "
                 f"{errors:>6}   {metrics['peak_ratio']:>6.3f}  "
                 f"{metrics['rms_ratio']:>6.3f}  {snr_str:>8}    "
                 f"{metrics['correlation']:>6.3f}"

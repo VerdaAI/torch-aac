@@ -42,7 +42,7 @@ def detect_transients(
     sub_frames = frames.unflatten(-1, (num_sub, sub_len))  # (..., 8, sub_len)
 
     # Energy per sub-window
-    energy = (sub_frames ** 2).sum(dim=-1)  # (..., 8)
+    energy = (sub_frames**2).sum(dim=-1)  # (..., 8)
 
     # Ratio of adjacent sub-window energies
     ratios = energy[..., 1:] / (energy[..., :-1] + 1e-10)  # (..., 7)

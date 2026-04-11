@@ -17,7 +17,7 @@ from torch_aac.cpu.bitstream import build_adts_frame
 from torch_aac.cpu.huffman import encode_spectral_band
 from torch_aac.gpu.filterbank import apply_window, frame_audio, mdct
 from torch_aac.gpu.huffman_select import select_codebooks
-from torch_aac.gpu.quantizer import quantize, quantize_per_band
+from torch_aac.gpu.quantizer import quantize_per_band
 from torch_aac.gpu.rate_control import compute_scalefactors, find_global_gain
 from torch_aac.tables.sfb_tables import get_sfb_offsets
 
@@ -94,9 +94,7 @@ class AACEncoder:
         pcm_tensor = pcm_tensor.to(self._device)
 
         C, _T = pcm_tensor.shape
-        assert self.config.channels == C, (
-            f"Expected {self.config.channels} channels, got {C}"
-        )
+        assert self.config.channels == C, f"Expected {self.config.channels} channels, got {C}"
 
         # Frame the audio: (C, num_frames, window_length)
         frames = frame_audio(pcm_tensor, AAC_FRAME_LENGTH, AAC_WINDOW_LENGTH)
@@ -186,9 +184,7 @@ class AACEncoder:
 
         # 4. Compute per-band scalefactors for optimal reconstruction
         # Shape: (B, C, num_sfb) or (B, num_sfb)
-        scalefactors = compute_scalefactors(
-            mdct_coeffs, global_gains, self._sfb_offsets
-        )
+        scalefactors = compute_scalefactors(mdct_coeffs, global_gains, self._sfb_offsets)
 
         # 5. Quantize using per-band scalefactors
         quantized = quantize_per_band(

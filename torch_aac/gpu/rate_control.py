@@ -10,7 +10,7 @@ from __future__ import annotations
 import torch
 
 from torch_aac.config import QuantMode
-from torch_aac.gpu.quantizer import SF_OFFSET, estimate_bit_count, quantize
+from torch_aac.gpu.quantizer import estimate_bit_count, quantize
 
 # Search parameters
 MIN_GAIN = 0
@@ -101,7 +101,6 @@ def compute_scalefactors(
         Values are absolute scalefactors (not deltas).
     """
     num_sfb = len(sfb_offsets) - 1
-    device = mdct_coeffs.device
     original_shape = mdct_coeffs.shape[:-1]
 
     # Without a psychoacoustic model, uniform per-band scalefactor (= global_gain)

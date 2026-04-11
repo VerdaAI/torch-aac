@@ -30,7 +30,9 @@ def sine_window(length: int, device: torch.device | None = None) -> torch.Tensor
 
 
 @lru_cache(maxsize=8)
-def kbd_window(length: int, alpha: float = 4.0, device: torch.device | None = None) -> torch.Tensor:
+def kbd_window(
+    length: int, alpha: float = 4.0, device: torch.device | None = None
+) -> torch.Tensor:
     """Compute the Kaiser-Bessel Derived (KBD) window.
 
     Args:

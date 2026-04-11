@@ -90,11 +90,9 @@ def _encode_unsigned_group(
     """
     max_abs = CODEBOOK_MAX_ABS[codebook]
 
-    if codebook == 11:
-        # Codebook 11: escape codes for values > 15
-        lookup_vals = np.minimum(abs_values, 16)
-    else:
-        lookup_vals = np.minimum(abs_values, max_abs)
+    # Codebook 11 uses escape for values > 15 (Huffman entry at index 16
+    # indicates escape); other books clamp at their max_abs.
+    lookup_vals = np.minimum(abs_values, 16 if codebook == 11 else max_abs)
 
     key = tuple(int(v) for v in lookup_vals)
     try:

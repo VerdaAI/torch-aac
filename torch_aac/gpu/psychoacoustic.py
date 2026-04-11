@@ -114,11 +114,7 @@ def _spreading_function_matrix(
     # where dz = bark_masker - bark_maskee
     dz = center_bark.unsqueeze(1) - center_bark.unsqueeze(0)  # (bands, bands)
 
-    spreading_db = (
-        15.81
-        + 7.5 * (dz + 0.474)
-        - 17.5 * torch.sqrt(1.0 + (dz + 0.474) ** 2)
-    )
+    spreading_db = 15.81 + 7.5 * (dz + 0.474) - 17.5 * torch.sqrt(1.0 + (dz + 0.474) ** 2)
 
     # Clamp to reasonable range and convert to linear
     spreading_db = torch.clamp(spreading_db, min=-100.0, max=0.0)
@@ -152,7 +148,7 @@ def compute_masking_thresholds(
 
     # 1. Power spectrum from MDCT coefficients
     # MDCT coefficients approximate the power spectrum in each band
-    power = flat ** 2  # (N, 1024)
+    power = flat**2  # (N, 1024)
 
     # 2. Compute energy per scalefactor band
     band_energy = torch.zeros(N, num_sfb, device=device)
@@ -165,9 +161,7 @@ def compute_masking_thresholds(
     10.0 * torch.log10(band_energy + 1e-10)
 
     # 4. Apply spreading function
-    spreading = _spreading_function_matrix(
-        num_sfb, sample_rate, tuple(sfb_offsets), device
-    )
+    spreading = _spreading_function_matrix(num_sfb, sample_rate, tuple(sfb_offsets), device)
     # Spread energy: (N, num_sfb) @ (num_sfb, num_sfb) → (N, num_sfb)
     spread_energy = torch.matmul(band_energy, spreading)
 

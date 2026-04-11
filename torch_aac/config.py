@@ -62,6 +62,7 @@ CHANNEL_CONFIG: dict[int, int] = {
 # Quantization
 # ---------------------------------------------------------------------------
 
+
 class QuantMode(Enum):
     """Quantization mode for the encoder."""
 
@@ -78,6 +79,7 @@ class QuantMode(Enum):
 # ---------------------------------------------------------------------------
 # Encoder configuration
 # ---------------------------------------------------------------------------
+
 
 @dataclass(frozen=True)
 class EncoderConfig:
@@ -110,9 +112,7 @@ class EncoderConfig:
                 f"Unsupported channel count {self.channels}. Supported: 1 (mono), 2 (stereo)"
             )
         if not 16000 <= self.bitrate <= 576000:
-            raise ValueError(
-                f"Bitrate {self.bitrate} out of range. Must be 16000-576000 bps."
-            )
+            raise ValueError(f"Bitrate {self.bitrate} out of range. Must be 16000-576000 bps.")
 
     @property
     def sample_rate_index(self) -> int:
