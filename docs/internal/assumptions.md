@@ -182,3 +182,59 @@ output exactly matches what FFmpeg's decoder expects.
 | A2 addressed | Basis cache needs to be thread-safe for multi-GPU |
 | A11 validated | Rate control convergence with real spectral data |
 | A12 validated | Bit estimation accuracy with real Huffman encoding |
+
+---
+
+## Post-spectral-encoding additions (2026-04 session)
+
+Several earlier V1 assumptions are now resolved by the working spectral path.
+Updating and adding new ones discovered while debugging amplitude.
+
+### Resolved
+- **A3 / C5**: Frames are no longer silent. Real spectral data is written, FFmpeg decodes with correlation 1.0 on tonal signals.
+- **A10**: Full Huffman tables (cb 1-11) are populated from ISO/FFmpeg reference.
+- **A7**: Sine window is used for both forward MDCT and bitstream `window_shape` flag (was previously wrong — see A24 below).
+- **C3**: Codebook signed/unsigned flags now match spec (cb1,2 signed quads; cb3,4 unsigned quads; cb5,6 signed pairs; cb7-11 unsigned pairs).
+- **A11**: Rate control binary search converges in practice for all tested signals.
+
+### A22: Effective SF_OFFSET is 164, not 100
+**Assumption**: The decoder unity point — where `q^(4/3) * 2^((sf - SF_OFFSET)/4) = output_peak` holds — is at `SF_OFFSET = 164` for our matmul-based forward MDCT, NOT the `100` value implied by the ISO spec text and FFmpeg's pow2sf formulation.
+**Why**: Empirically determined by writing a bitstream with `q=1` at a known bin and sweeping `sf` — `sf=164` produces output peak ≈ 1.0. The 164 = 200 - 36 reflects that our unnormalized forward MDCT produces coefficients ~2^9 times larger than FFmpeg's expected normalized range, so the effective sf is biased down.
+**Risk**: If the forward MDCT normalization changes (e.g., switching to FFT-based MDCT with a built-in `2/N` factor), SF_OFFSET must be re-calibrated.
+**Status**: ✅ Working. SF_OFFSET=164 set in `gpu/quantizer.py`.
+**Action**: When changing MDCT normalization, re-run the sweep probe to find the new unity sf.
+
+### A23: Uniform global_gain for per-band scalefactors
+**Assumption**: Without a psychoacoustic model, `compute_scalefactors` returns `global_gain` for every band (uniform sf). The per-band sf degree of freedom is unused.
+**Why**: Attempting per-band sf allocation without a perceptual model (previous version targeted `q≈30` per band individually) forces every band — including noise floor — into the escape codebook and wastes bits, capping SNR around 35 dB. Uniform sf gives 60-73 dB on tonal signals.
+**Risk**: Noise-like content under-reconstructs at low bitrate (SNR ~2 dB @ 48kbps), because noise has energy in many bands and a single global step can't allocate differentially.
+**Action for Phase 3**: Wire up the existing `gpu/psychoacoustic.py` masking thresholds to drive per-band sf. Bands masked by the signal get fewer bits (higher sf); bands near the masker peak get more bits (lower sf).
+
+### A24: window_shape bit is 0 for sine, 1 for KBD
+**Assumption**: In the bitstream `ics_info`, `window_shape=0` means sine window and `window_shape=1` means Kaiser-Bessel-Derived (KBD).
+**Why**: Was previously backwards in our bitstream writer (writing 1 while using sine MDCT), causing FFmpeg to apply KBD synthesis to our sine-windowed MDCT → severe reconstruction error.
+**Status**: ✅ Fixed in `cpu/bitstream.py`.
+
+### A25: AAC escape code format N = floor(log2(val)) - 4
+**Assumption**: For codebook 11 escape codes, the format is `N ones + 0 + (N+4)-bit mantissa` where `N = floor(log2(val)) - 4` (equivalently `bit_length(val) - 5`), and the stored mantissa is `val - 2^(N+4)`.
+**Why**: Decoder reconstructs `n = (1 << (N+4)) + mantissa`. Writing the raw value as mantissa (our previous bug) caused every escape-coded coefficient to decode to ~3x its intended magnitude and misaligned all subsequent bits.
+**Status**: ✅ Fixed in `cpu/huffman.py`.
+
+### A26: Bit cost estimator systematically overestimates
+**Assumption**: `estimate_bit_count` uses a rough cost model (`0.25 bits` for zero, `log2(q) + 4` for small, `log2(q) * 2 + 8` for large) that overestimates real Huffman output by ~30-50%.
+**Impact**: Rate control converges to gains that use 25-87% of the target bitrate. This is accidentally a *feature* for tonal signals (over-quantization zeros out noise-floor bands, raising SNR to 60+ dB), but a *bug* for noise (under-allocates bits).
+**Risk**: Tuning the estimator to be more accurate might HURT tonal SNR by pushing gain down, adding noise-floor reconstruction. Any improvement must be paired with per-band allocation.
+**Status**: ⚠️ Known, pending psychoacoustic model.
+
+### A27: Differentiable rate_loss = bits_used / target
+**Assumption**: In `DifferentiableAAC`, `return_rate_loss=True` returns `estimate_bit_count(soft_quantized).mean() / target_bits`. Values near 1.0 mean budget fully consumed; lower means slack.
+**Why**: The adaptive `find_global_gain` already makes bits fit the budget for most signals, so a naive "overflow" penalty is always zero and carries no gradient signal. Normalizing the *actual* bit usage by target gives a differentiable signal that encourages compressible outputs during training.
+**Status**: ✅ Working. Verified with sine (rate_loss=0.75) vs white noise (0.95).
+
+---
+
+## Conflicts / issues still open
+
+- **A9 / SFB tables**: Still not cross-checked against FFmpeg's `aactab.c`. Decoder accepts our output so they are at least close enough, but a formal comparison would be safer.
+- **A2 / basis cache thread safety**: Unchanged. Still a module-level dict.
+- **A4 / 3 mystery bits after ICS**: No longer relevant — we now write real spectral data so max_sfb > 0 and the bits correspond to section_data.
