@@ -102,42 +102,19 @@ def compute_scalefactors(
     """
     num_sfb = len(sfb_offsets) - 1
     device = mdct_coeffs.device
-
-    # Flatten to (N, 1024) for processing
     original_shape = mdct_coeffs.shape[:-1]
-    flat = mdct_coeffs.reshape(-1, mdct_coeffs.shape[-1])
-    N = flat.shape[0]
 
-    # Compute max absolute value per band
-    max_abs = torch.zeros(N, num_sfb, device=device)
-    for i in range(num_sfb):
-        s, e = sfb_offsets[i], sfb_offsets[i + 1]
-        if e <= flat.shape[-1]:
-            max_abs[:, i] = flat[:, s:e].abs().max(dim=-1).values
-
-    # Optimal scalefactor per band: makes quantizer output ≈ target_q for peak.
-    # q = |x|^0.75 / step_enc, step_enc = 2^(3/16 * (sf - SF_OFFSET))
-    # Solve for sf so q = target_q:
-    #   sf = SF_OFFSET + 4*log2(|x|) - (16/3)*log2(target_q)
-    target_q = 30.0
-    log2_max = torch.log2(max_abs.clamp(min=1e-10))
-    optimal_sf = SF_OFFSET + 4.0 * log2_max - (16.0 / 3.0) * torch.log2(
-        torch.tensor(target_q, device=device)
-    )
-
-    scalefactors = optimal_sf.clamp(0, 255).round().to(torch.int64)
-
-    # For zero bands, use global_gain
-    # Expand global_gain to (N, 1) to broadcast with (N, num_sfb)
-    gg_flat = global_gain.float()
-    # If mdct_coeffs was (B, C, 1024), N = B*C but global_gain is (B,)
-    # Repeat each gain C times to match flattened shape
-    if N > gg_flat.shape[0]:
-        repeat_factor = N // gg_flat.shape[0]
-        gg_flat = gg_flat.repeat_interleave(repeat_factor)
-    gg_expanded = gg_flat.unsqueeze(-1).expand_as(scalefactors).to(torch.int64)
-
-    zero_bands = max_abs < 1e-10
-    scalefactors = torch.where(zero_bands, gg_expanded, scalefactors)
+    # Without a psychoacoustic model, uniform per-band scalefactor (= global_gain)
+    # is better than trying to equalize q across bands. The previous approach
+    # (sf chosen so q≈30 per band) forced every band — including pure noise —
+    # into the escape codebook (cb11), which is bit-wasteful and degrades SNR.
+    # With a uniform sf, noise-floor bands naturally quantize to q≈0 and the
+    # codebook selector picks small books for them.
+    gg = global_gain.to(torch.int64).reshape(-1)
+    # Expand to match flattened frame count (e.g. stereo: B*C frames from B gains)
+    flat_count = int(torch.tensor(original_shape).prod().item())
+    if flat_count > gg.shape[0]:
+        gg = gg.repeat_interleave(flat_count // gg.shape[0])
+    scalefactors = gg.unsqueeze(-1).expand(flat_count, num_sfb).contiguous()
 
     return scalefactors.reshape(*original_shape, num_sfb)
