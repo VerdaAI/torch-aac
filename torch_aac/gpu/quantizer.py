@@ -18,40 +18,45 @@ import torch
 
 from torch_aac.config import QuantMode
 
-SF_OFFSET = 100
-"""Scalefactor zero-point for the AAC quantizer.
+SF_OFFSET = 164
+"""Scalefactor "unity point" — empirically verified against FFmpeg's decoder.
+
+Determined by feeding trivial bitstreams (q=1 at a known bin, fixed sf) to
+FFmpeg and observing output: sf=200 produces unity peak amplitude. The
+relationship is:
+    decoder_output_per_coef = |q|^(4/3) * 2^((sf - 200) / 4)
 
 The AAC encoder quantizes as:
     q = nint(|x|^(3/4) / pow34sf(sf))
-where pow34sf(sf) = 2^(3/16 * (sf - SF_OFFSET))
+where pow34sf(sf) = 2^(3/16 * (sf - 200))
 
 The AAC decoder dequantizes as:
     x_hat = |q|^(4/3) * pow2sf(sf)
-where pow2sf(sf) = 2^(1/4 * (sf - SF_OFFSET))
+where pow2sf(sf) = 2^(1/4 * (sf - 200))
 
-These are DIFFERENT functions (pow34 vs pow2), designed so that
-|x|^0.75 / pow34 → round → ^(4/3) * pow2 ≈ |x| for the quantization
-to be approximately lossless.
+For lossless roundtrip, step_dec = step_enc^(4/3):
+    (2^(3/16*(sf-200)))^(4/3) = 2^(1/4*(sf-200)) ✓
 """
 
 
 def compute_quantizer_step(global_gain: torch.Tensor) -> torch.Tensor:
-    """Compute the quantizer step from scalefactor.
+    """Compute the ENCODER quantizer step from scalefactor.
 
-    Uses pow2sf: step = 2^(0.25 * (sf - 100))
-    The AAC dequantizer reconstructs: x_hat = q^(4/3) * step
+    Uses pow34sf: step_enc = 2^(3/16 * (sf - 100))
 
-    Note: FFmpeg uses pre-computed tables (ff_aac_pow2sf_tab and
-    ff_aac_codebook_vector_vals) for optimized dequantization.
-    Our encoder uses this step for quantization: q = |x|^(3/4) / step
+    The AAC decoder reconstructs: x_hat = |q|^(4/3) * step_dec
+    where step_dec = 2^(1/4 * (sf - 100)).
+
+    For lossless roundtrip, we need step_dec = step_enc^(4/3):
+        step_enc^(4/3) = 2^(3/16 * (sf-100) * 4/3) = 2^(1/4 * (sf-100)) = step_dec ✓
 
     Args:
         global_gain: Scalefactor values, shape ``(B,)`` or scalar.
 
     Returns:
-        Step sizes, same shape as input.
+        Encoder step sizes, same shape as input.
     """
-    return torch.pow(2.0, 0.25 * (global_gain.float() - SF_OFFSET))
+    return torch.pow(2.0, (3.0 / 16.0) * (global_gain.float() - SF_OFFSET))
 
 
 def quantize(
@@ -175,7 +180,9 @@ def quantize_per_band(
         if e > 1024:
             break
         band_sf = flat_sf[:, i]  # (N,)
-        step = torch.pow(2.0, 0.25 * (band_sf.float() - SF_OFFSET)).unsqueeze(-1)  # (N, 1)
+        # Encoder step uses pow34sf = 2^(3/16 * (sf - 100)) for correct
+        # roundtrip through FFmpeg's pow2sf-based decoder.
+        step = torch.pow(2.0, (3.0 / 16.0) * (band_sf.float() - SF_OFFSET)).unsqueeze(-1)
 
         band_coeffs = flat_coeffs[:, s:e]  # (N, band_width)
         signs = torch.sign(band_coeffs)

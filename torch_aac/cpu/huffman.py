@@ -130,16 +130,22 @@ def _encode_escape(writer: BitWriter, abs_val: int) -> None:
 
     Escape format per ISO 14496-3:
         N ones + one zero + (N+4) bit mantissa
-    where N = floor(log2(abs_val)) - 3
+    where N = floor(log2(abs_val)) - 4
 
-    Values are clamped to MAX_ESCAPE_VAL (4095) to avoid decoder overflow.
+    The decoded value is reconstructed as ``n = 2^(N+4) + mantissa``, so the
+    mantissa stored is ``abs_val - 2^(N+4)``.
+
+    Values are clamped to MAX_ESCAPE_VAL (8191) to avoid decoder overflow.
     """
     abs_val = min(abs_val, MAX_ESCAPE_VAL)
-    n = max(0, min(abs_val.bit_length() - 4, MAX_ESCAPE_N))
+    # N = bit_length - 5 (= floor(log2(abs_val)) - 4), since bit_length == floor(log2)+1.
+    n = max(0, min(abs_val.bit_length() - 5, MAX_ESCAPE_N))
+    mantissa_bits = n + 4
+    mantissa = abs_val - (1 << mantissa_bits)
     # N ones
     for _ in range(n):
         writer.write_bits(1, 1)
     # Terminating zero
     writer.write_bits(0, 1)
     # (N+4) bit mantissa
-    writer.write_bits(abs_val, n + 4)
+    writer.write_bits(mantissa, mantissa_bits)

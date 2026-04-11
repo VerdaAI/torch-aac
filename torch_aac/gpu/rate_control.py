@@ -115,12 +115,13 @@ def compute_scalefactors(
         if e <= flat.shape[-1]:
             max_abs[:, i] = flat[:, s:e].abs().max(dim=-1).values
 
-    # Optimal scalefactor per band: makes quantizer step match the band's energy.
-    # q = |x|^0.75 / step, step = 2^(0.25*(sf - SF_OFFSET))
-    # For q ≈ target_q: sf = SF_OFFSET + 3*log2(|x|) - 4*log2(target_q)
+    # Optimal scalefactor per band: makes quantizer output ≈ target_q for peak.
+    # q = |x|^0.75 / step_enc, step_enc = 2^(3/16 * (sf - SF_OFFSET))
+    # Solve for sf so q = target_q:
+    #   sf = SF_OFFSET + 4*log2(|x|) - (16/3)*log2(target_q)
     target_q = 30.0
     log2_max = torch.log2(max_abs.clamp(min=1e-10))
-    optimal_sf = SF_OFFSET + 3.0 * log2_max - 4.0 * torch.log2(
+    optimal_sf = SF_OFFSET + 4.0 * log2_max - (16.0 / 3.0) * torch.log2(
         torch.tensor(target_q, device=device)
     )
 

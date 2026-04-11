@@ -186,7 +186,7 @@ def _write_ics(
     # --- ics_info ---
     writer.write_bits(0, 1)       # ics_reserved_bit
     writer.write_bits(0, 2)       # window_sequence: ONLY_LONG_SEQUENCE
-    writer.write_bits(1, 1)       # window_shape: sine
+    writer.write_bits(0, 1)       # window_shape: 0=sine, 1=KBD
 
     writer.write_bits(max_sfb, 6) # max_sfb (only bands with content)
     writer.write_bits(0, 1)       # predictor_data_present: 0
