@@ -89,7 +89,8 @@ class EncoderConfig:
         sample_rate: Audio sample rate in Hz. Must be one of the supported rates.
         channels: Number of audio channels (1 for mono, 2 for stereo).
         bitrate: Target bitrate in bits per second (e.g. 128000 for 128 kbps).
-        device: PyTorch device string. "auto" selects CUDA if available.
+        device: PyTorch device string. "auto" selects CUDA, then MPS
+            (Apple Silicon), then CPU. Explicit values: "cuda", "mps", "cpu".
         batch_size: Number of frames per GPU batch. 0 = auto-detect from VRAM.
         quant_mode: Quantization mode (hard, ste, or noise).
     """
@@ -146,7 +147,17 @@ class EncoderConfig:
 
     @property
     def resolved_device(self) -> torch.device:
-        """Resolve 'auto' to actual device."""
+        """Resolve 'auto' to actual device.
+
+        Selection order:
+          1. CUDA (NVIDIA GPUs) if available
+          2. MPS (Apple Silicon via Metal Performance Shaders) if available
+          3. CPU fallback
+        """
         if self.device == "auto":
-            return torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            if torch.cuda.is_available():
+                return torch.device("cuda")
+            if torch.backends.mps.is_available():
+                return torch.device("mps")
+            return torch.device("cpu")
         return torch.device(self.device)

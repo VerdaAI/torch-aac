@@ -35,7 +35,15 @@ total_loss = reconstruction_loss + 0.1 * rate_loss
 pip install -e ".[dev]"
 ```
 
-Requires PyTorch >= 2.0. Works on macOS (CPU), Linux (CPU/CUDA), with CUDA GPUs (RTX 3090, T4 tested).
+Requires PyTorch >= 2.0. Supported backends:
+
+| Platform              | Backend | Status                       |
+|-----------------------|---------|------------------------------|
+| Linux / Windows + NVIDIA | CUDA    | ✅ RTX 3090, T4 tested        |
+| macOS + Apple Silicon    | MPS     | ✅ M-series via Metal         |
+| Any                      | CPU     | ✅ PyTorch CPU fallback       |
+
+`device="auto"` picks CUDA → MPS → CPU in that order.
 
 ## CLI
 
@@ -116,7 +124,7 @@ Weak: broadband signals (speech, noise) at low bitrate — the uniform-scalefact
 | Bitrate       | 48000–320000 bps                       |
 | Profile       | AAC-LC only                            |
 | Container     | ADTS (.aac)                            |
-| Target GPUs   | RTX 3090 (24 GB), GCP T4 (16 GB)       |
+| Target GPUs   | RTX 3090, GCP T4, Apple Silicon (MPS)  |
 
 ## Development
 

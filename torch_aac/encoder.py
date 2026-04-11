@@ -67,6 +67,10 @@ class AACEncoder:
                 props = torch.cuda.get_device_properties(self._device)
                 vram_gb = props.total_mem / (1024**3)
                 self._batch_size = 4096 if vram_gb < 20 else 8192
+            elif self._device.type == "mps":
+                # Apple Silicon unified memory. No cheap query for total
+                # available memory; 1024 is a safe default on M1/M2/M3.
+                self._batch_size = 1024
             else:
                 self._batch_size = 256
         else:
@@ -238,6 +242,8 @@ class AACEncoder:
         """Release GPU resources."""
         if self._device.type == "cuda":
             torch.cuda.empty_cache()
+        elif self._device.type == "mps":
+            torch.mps.empty_cache()
 
     def __enter__(self) -> AACEncoder:
         return self
