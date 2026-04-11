@@ -60,16 +60,23 @@ Two modes:
 
 ## Quality (v0.1.0)
 
-Quality benchmarks vs FFmpeg decode roundtrip, 1 s mono 48 kHz:
+Quality benchmarks vs FFmpeg decode roundtrip, 1 s mono 48 kHz, `bench_quality.py`:
 
-| Signal      | 48 kbps          | 128 kbps         | 320 kbps         |
-|-------------|------------------|------------------|------------------|
-| sine 440 Hz | 63.9 dB SNR      | 73.0 dB SNR      | 73.2 dB SNR      |
-| sine 1 kHz  | 59.8 dB SNR      | 72.0 dB SNR      | 72.8 dB SNR      |
-| chord       | 54.8 dB SNR      | 70.4 dB SNR      | 72.1 dB SNR      |
-| white noise |  1.9 dB SNR      |  7.0 dB SNR      | 26.7 dB SNR      |
+| Signal        | 48 kbps | 128 kbps | 320 kbps | Notes                      |
+|---------------|--------:|---------:|---------:|----------------------------|
+| sine 440 Hz   |  63.9   |   73.0   |   73.2   | Pure tone                  |
+| sine 1 kHz    |  59.8   |   72.0   |   72.8   | Pure tone                  |
+| chord         |  54.8   |   70.4   |   72.1   | 3-harmonic mix             |
+| music_like    |  ~45    |   61.8   |   69.3   | 10-partial harmonic series |
+| sweep         |  ~40    |   57.9   |   69.9   | Log chirp 100 Hz → 10 kHz  |
+| transient     |  ~25    |   41.1   |   53.6   | Click train                |
+| speech_like   |   —     |   11.8   |   30.6   | Vowel-like formant buzz    |
+| noise (white) |   1.9   |    7.0   |   26.7   | Broadband Gaussian         |
 
-Peak and RMS amplitude ratios are ~1.00 across all cases; correlation is 1.00 for tonal signals. White noise at low bitrate is the main limitation (see below).
+(All SNR in dB; peak and RMS amplitude ratios are ~1.00 across every case.)
+
+Strong: pure tones, harmonic music, chirps.
+Weak: broadband signals (speech, noise) at low bitrate — the uniform-scalefactor rate control can't allocate bits selectively across many similar-energy bands. This is the main motivator for the Phase 3 psychoacoustic work.
 
 ## Current State (v0.1.0)
 

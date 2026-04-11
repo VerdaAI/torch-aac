@@ -21,9 +21,21 @@ import torch_aac
 
 
 def generate_signal(kind: str, duration_sec: float = 1.0, sr: int = 48000) -> np.ndarray:
-    """Generate test signal of various types."""
+    """Generate test signal of various types.
+
+    Synthetic signals cover:
+      - pure tonal: sine_440, sine_1khz
+      - tonal mixture: chord (3 harmonics)
+      - broadband: noise (white Gaussian)
+      - silence
+      - music_like: rich harmonic series with slow AM envelope (~cello note)
+      - speech_like: formant-shaped noise pulses (vowel-like buzz)
+      - transient: impulse train + decaying sine (~snare hit)
+      - sweep: log-frequency chirp 100 Hz → 10 kHz
+    """
     n = int(duration_sec * sr)
     t = np.arange(n, dtype=np.float32) / sr
+    rng = np.random.RandomState(42)
 
     if kind == "sine_440":
         return (0.5 * np.sin(2 * np.pi * 440 * t)).astype(np.float32)
@@ -36,10 +48,55 @@ def generate_signal(kind: str, duration_sec: float = 1.0, sr: int = 48000) -> np
             + 0.1 * np.sin(2 * np.pi * 1320 * t)
         ).astype(np.float32)
     elif kind == "noise":
-        rng = np.random.RandomState(42)
         return (0.3 * rng.randn(n)).astype(np.float32)
     elif kind == "silence":
         return np.zeros(n, dtype=np.float32)
+    elif kind == "music_like":
+        # Harmonic series with slowly varying amplitude (like a sustained note)
+        f0 = 220.0
+        envelope = 0.3 * (1.0 + 0.3 * np.sin(2 * np.pi * 4 * t))  # 4 Hz AM
+        harmonics = sum((1.0 / k) * np.sin(2 * np.pi * f0 * k * t + 0.7 * k) for k in range(1, 11))
+        return (envelope * harmonics / 2.0).astype(np.float32)
+    elif kind == "speech_like":
+        # Vowel-like: pitched excitation times a formant filter approximation.
+        # Pulse train at 120 Hz (fundamental) times 3 formant resonances.
+        pitch = 120.0
+        pulse = (np.sin(2 * np.pi * pitch * t) > 0.95).astype(np.float32)
+        # Simulate three formants as damped sinusoids per pulse (very rough)
+        formants = (
+            0.4 * np.sin(2 * np.pi * 700 * t)
+            + 0.3 * np.sin(2 * np.pi * 1220 * t)
+            + 0.2 * np.sin(2 * np.pi * 2600 * t)
+        )
+        signal = pulse * formants
+        # Add slight breath noise
+        signal = signal + 0.05 * rng.randn(n)
+        # Normalize to ~0.5 peak
+        peak = np.abs(signal).max()
+        if peak > 0:
+            signal = signal * (0.5 / peak)
+        return signal.astype(np.float32)
+    elif kind == "transient":
+        # Click train + decaying resonances
+        signal = np.zeros(n, dtype=np.float32)
+        for click_t in np.arange(0.05, duration_sec, 0.2):
+            idx = int(click_t * sr)
+            if idx >= n:
+                break
+            # Decaying exponential impulse
+            decay_len = int(0.08 * sr)
+            tail_end = min(idx + decay_len, n)
+            tail_t = np.arange(tail_end - idx, dtype=np.float32) / sr
+            decay = np.exp(-tail_t * 30.0)
+            tone = 0.5 * np.sin(2 * np.pi * 2000 * tail_t) * decay
+            signal[idx:tail_end] += tone
+        return signal
+    elif kind == "sweep":
+        # Log-frequency chirp 100 Hz → 10 kHz
+        f0, f1 = 100.0, 10000.0
+        k = np.log(f1 / f0) / duration_sec
+        phase = 2 * np.pi * f0 * (np.exp(k * t) - 1.0) / k
+        return (0.5 * np.sin(phase)).astype(np.float32)
     else:
         raise ValueError(f"Unknown signal kind: {kind}")
 
@@ -149,7 +206,16 @@ def main() -> None:
         "--signals",
         type=str,
         nargs="+",
-        default=["sine_440", "sine_1khz", "chord", "noise"],
+        default=[
+            "sine_440",
+            "sine_1khz",
+            "chord",
+            "noise",
+            "music_like",
+            "speech_like",
+            "transient",
+            "sweep",
+        ],
     )
     parser.add_argument(
         "--duration",
