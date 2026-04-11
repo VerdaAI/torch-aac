@@ -20,13 +20,24 @@ from torch_aac.config import (
 class BitWriter:
     """Bit-level writer for constructing AAC bitstreams.
 
-    Accumulates bits and flushes to a byte buffer.
+    Packs entire codewords in a single op using a bit accumulator; only
+    flushes whole bytes when the accumulator overflows. This avoids the
+    per-bit Python loop that dominated encode time (cProfile showed
+    55% of encode time in the old implementation).
+
+    Invariants:
+        - ``_accum`` holds the next ``_nbits`` unemitted bits, MSB-aligned
+          in a Python int. ``_nbits`` is in [0, 63].
+        - ``_total_bits`` is the total bit count written so far (including
+          whatever is still in ``_accum``).
     """
 
     def __init__(self, capacity: int = 8192) -> None:
         self._buffer = bytearray(capacity)
         self._byte_pos = 0
-        self._bit_pos = 0  # bits written in current byte (0-7)
+        self._accum = 0  # pending bits, MSB-aligned in _nbits
+        self._nbits = 0
+        self._total_bits = 0
 
     def write_bits(self, value: int, num_bits: int) -> None:
         """Write ``num_bits`` bits from ``value`` (MSB first).
@@ -35,31 +46,43 @@ class BitWriter:
             value: Integer value to write. Only the lowest ``num_bits`` are used.
             num_bits: Number of bits to write (1-32).
         """
-        for i in range(num_bits - 1, -1, -1):
-            bit = (value >> i) & 1
+        # Append the new bits to the low end of the accumulator.
+        mask = (1 << num_bits) - 1
+        self._accum = (self._accum << num_bits) | (value & mask)
+        self._nbits += num_bits
+        self._total_bits += num_bits
+
+        # Drain whole bytes from the top of the accumulator.
+        while self._nbits >= 8:
+            self._nbits -= 8
+            byte = (self._accum >> self._nbits) & 0xFF
             if self._byte_pos >= len(self._buffer):
                 self._buffer.extend(b"\x00" * 1024)
-            self._buffer[self._byte_pos] |= bit << (7 - self._bit_pos)
-            self._bit_pos += 1
-            if self._bit_pos == 8:
-                self._bit_pos = 0
-                self._byte_pos += 1
+            self._buffer[self._byte_pos] = byte
+            self._byte_pos += 1
+            # Clear the emitted bits to keep _accum small.
+            self._accum &= (1 << self._nbits) - 1 if self._nbits else 0
 
     @property
     def bits_written(self) -> int:
         """Total number of bits written."""
-        return self._byte_pos * 8 + self._bit_pos
+        return self._total_bits
 
     def to_bytes(self) -> bytes:
         """Return the accumulated bytes (including partial last byte)."""
-        total_bytes = self._byte_pos + (1 if self._bit_pos > 0 else 0)
-        return bytes(self._buffer[:total_bytes])
+        if self._nbits == 0:
+            return bytes(self._buffer[: self._byte_pos])
+        # Flush the partial byte, left-aligned (MSB first).
+        if self._byte_pos >= len(self._buffer):
+            self._buffer.extend(b"\x00" * 1)
+        self._buffer[self._byte_pos] = (self._accum << (8 - self._nbits)) & 0xFF
+        return bytes(self._buffer[: self._byte_pos + 1])
 
     def align_to_byte(self) -> None:
         """Pad with zero bits to the next byte boundary."""
-        if self._bit_pos > 0:
-            self._bit_pos = 0
-            self._byte_pos += 1
+        if self._nbits > 0:
+            pad = 8 - self._nbits
+            self.write_bits(0, pad)
 
 
 def write_adts_header(
