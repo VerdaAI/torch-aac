@@ -20,7 +20,7 @@ import torch.nn as nn
 
 from torch_aac.config import AAC_FRAME_LENGTH, AAC_WINDOW_LENGTH, EncoderConfig, QuantMode
 from torch_aac.gpu.filterbank import apply_window, frame_audio, imdct, mdct, overlap_add
-from torch_aac.gpu.quantizer import dequantize, quantize
+from torch_aac.gpu.quantizer import dequantize, estimate_bit_count, quantize
 from torch_aac.gpu.rate_control import find_global_gain
 
 
@@ -88,6 +88,7 @@ class DifferentiableAAC(nn.Module):
         # Frame the audio
         # frame_audio expects (C, T) per batch item; process per batch
         all_reconstructed = []
+        all_q: list[torch.Tensor] = []
 
         for b in range(B):
             frames = frame_audio(audio[b], AAC_FRAME_LENGTH, AAC_WINDOW_LENGTH)
@@ -114,6 +115,8 @@ class DifferentiableAAC(nn.Module):
             # Differentiable quantize + dequantize
             q = quantize(coeffs_bc, gains, mode=self.config.quant_mode)
             reconstructed_coeffs = dequantize(q, gains)
+            if return_rate_loss:
+                all_q.append(q)
 
             # Back to (C, num_frames, 1024)
             reconstructed_coeffs = reconstructed_coeffs.permute(1, 0, 2)
@@ -138,9 +141,19 @@ class DifferentiableAAC(nn.Module):
             result = result.squeeze(0)
 
         if return_rate_loss:
-            # Differentiable rate loss: penalize deviation from target bit budget
-            # Uses the quantized coefficients' magnitude as a proxy
-            rate_loss = torch.tensor(0.0, device=audio.device, requires_grad=True)
+            # Differentiable rate loss: estimated bits normalized by target.
+            # The adaptive global_gain already makes quantized bits fit the
+            # budget for most signals, so we can't use "overflow" alone as a
+            # gradient signal (it'd be zero almost always). Instead, report
+            # actual bit usage relative to target: values near 1.0 mean the
+            # budget is fully consumed, lower values mean slack. Minimizing
+            # rate_loss pushes the model toward audio that's intrinsically
+            # cheap to compress (less high-frequency/transient content),
+            # independent of the reconstruction loss.
+            q_cat = torch.cat([qb.reshape(-1, qb.shape[-1]) for qb in all_q], dim=0)
+            bits_per_frame = estimate_bit_count(q_cat)  # (N,)
+            target = max(self._target_bits / max(C, 1), 1.0)
+            rate_loss = bits_per_frame.mean() / target
             return result, rate_loss
 
         return result
