@@ -23,7 +23,6 @@ from torch_aac.config import (
 from torch_aac.cpu.bitstream import build_adts_frame
 from torch_aac.cpu.huffman import encode_spectral_band
 from torch_aac.gpu.filterbank import apply_window, frame_audio, mdct
-from torch_aac.gpu.huffman_encode import encode_spectral_gpu
 from torch_aac.gpu.huffman_select import select_codebooks
 from torch_aac.gpu.quantizer import quantize_per_band
 from torch_aac.gpu.rate_control import compute_scalefactors, find_global_gain
@@ -84,7 +83,13 @@ class AACEncoder:
         else:
             self._batch_size = batch_size
 
-        self._use_gpu_huffman = False
+        # Use GPU Huffman when C BitWriter is available (for the batch packing).
+        try:
+            from torch_aac.cpu._bitwriter_native import is_available
+
+            self._use_gpu_huffman = is_available()
+        except ImportError:
+            self._use_gpu_huffman = False
         # PNS infrastructure is complete (detection + bitstream protocol) but
         # the noise energy calibration (sfo → decoded amplitude) needs tuning.
         # Disable by default until the +C correction factor is empirically
@@ -212,7 +217,7 @@ class AACEncoder:
 
         # 6. Codebook selection per channel
         q_flat = quantized.reshape(B * C, -1)
-        codebooks = select_codebooks(q_flat, self._sfb_offsets)
+        codebooks = select_codebooks(q_flat, self._sfb_offsets, pairs_only=self._use_gpu_huffman)
         codebooks = codebooks.reshape(B, C, -1)
 
         # 7. PNS: detect noise-like bands and compute noise scalefactors
@@ -284,84 +289,195 @@ class AACEncoder:
         global_gains: torch.Tensor,
         B: int,
     ) -> list[bytes]:
-        """Fast path: GPU Huffman lookup + C bit-packing (mono only).
+        """Fast path: batch GPU Huffman lookup + C bit-packing.
 
-        The GPU produces (codes, lengths) arrays for each frame's ICS payload
-        via vectorized table gathers. The C bitwriter_pack then packs these
-        into bytes. ADTS header is prepended on CPU.
+        All frames' spectral data is computed in ONE GPU gather via
+        ``encode_spectral_batched``. Per-frame ICS header, section data,
+        and scalefactor data are computed on CPU (fast), then everything
+        is packed via the C bitwriter.
         """
         from torch_aac.cpu._bitwriter_native import bitwriter_pack
+        from torch_aac.gpu.huffman_encode import encode_spectral_batched
 
-        # GPU Huffman lookup for all frames: returns list of (codes_np, lengths_np)
-        ics_pairs = encode_spectral_gpu(
-            quantized[:, 0, :],  # (B, 1024) mono channel
-            codebooks[:, 0, :],  # (B, num_sfb)
-            scalefactors[:, 0, :],  # (B, num_sfb)
-            global_gains,
-            self._sfb_offsets,
+        C = quantized.shape[1]
+
+        # --- GPU batch: spectral codes for all frames x channels at once ---
+        q_flat = quantized.reshape(B * C, 1024)
+        cb_flat = codebooks.reshape(B * C, -1)
+        spec_codes, spec_lengths, spec_active = encode_spectral_batched(
+            q_flat, cb_flat, self._sfb_offsets
         )
+        # spec_codes: (N, G, 6) uint32, spec_lengths: (N, G, 6) uint8
+        # spec_active: (N, G) bool
 
-        # ADTS header constants
-        sr_idx = {
-            96000: 0,
-            88200: 1,
-            64000: 2,
-            48000: 3,
-            44100: 4,
-            32000: 5,
-            24000: 6,
-            22050: 7,
-            16000: 8,
-            12000: 9,
-            11025: 10,
-            8000: 11,
-        }.get(self.config.sample_rate, 3)
-        profile = AOT_AAC_LC - 1  # 1 for LC in ADTS
+        # --- CPU: per-frame ICS header + section + sf + ADTS assembly ---
+        gains_np = global_gains.cpu().numpy().astype(np.int32)
+        sf_np = scalefactors.cpu().numpy().astype(np.int32)
+        cb_np = codebooks.cpu().numpy().astype(np.int32)
+        num_sfb = len(self._sfb_offsets) - 1
+
+        from torch_aac.cpu.bitstream import _PyBitWriter
+        from torch_aac.cpu.scalefactor import encode_scalefactor_delta
 
         adts_frames: list[bytes] = []
 
         for i in range(B):
-            codes_np, lengths_np = ics_pairs[i]
+            for ch in range(C):
+                frame_idx = i * C + ch
 
-            # Prepend element framing: ID_SCE(0, 3 bits) + tag(0, 4 bits)
-            # Append: ID_END(7, 3 bits)
-            n = len(codes_np)
-            full_codes = np.empty(n + 2, dtype=np.uint32)
-            full_lengths = np.empty(n + 2, dtype=np.uint8)
-            full_codes[0] = 0  # SCE=0 (3 bits) + tag=0 (4 bits) = 7 bits as one field
-            full_lengths[0] = 7
-            full_codes[1 : n + 1] = codes_np
-            full_lengths[1 : n + 1] = lengths_np
-            full_codes[n + 1] = 7  # ID_END
-            full_lengths[n + 1] = 3
+                # Collect (code, length) pairs for this frame
+                fc: list[int] = []
+                fl: list[int] = []
 
-            # Total payload bits → pad to byte boundary
-            total_bits = int(full_lengths.sum())
+                gg = int(gains_np[i])
+                cbs = cb_np[i, ch]
+                sfs = sf_np[i, ch]
+
+                # --- ICS header ---
+                max_sfb = 0
+                for b in range(num_sfb):
+                    if cbs[b] != 0:
+                        max_sfb = b + 1
+                max_sfb = min(max_sfb, 49)
+
+                fc.append(gg)
+                fl.append(8)  # global_gain
+                fc.append(0)
+                fl.append(1)  # reserved
+                fc.append(0)
+                fl.append(2)  # window_seq
+                fc.append(0)
+                fl.append(1)  # window_shape
+                fc.append(max_sfb)
+                fl.append(6)  # max_sfb
+                fc.append(0)
+                fl.append(1)  # predictor
+
+                if max_sfb > 0:
+                    # --- Section data ---
+                    si = 0
+                    while si < max_sfb:
+                        cb = int(cbs[si])
+                        run = 1
+                        while si + run < max_sfb and int(cbs[si + run]) == cb:
+                            run += 1
+                        fc.append(cb)
+                        fl.append(4)
+                        rem = run
+                        while rem >= 31:
+                            fc.append(31)
+                            fl.append(5)
+                            rem -= 31
+                        fc.append(rem)
+                        fl.append(5)
+                        si += run
+
+                    # --- Scalefactor data ---
+                    prev_sf = gg
+                    sf_bw = _PyBitWriter(256)
+                    for b in range(max_sfb):
+                        if cbs[b] == 0:
+                            continue
+                        sf = int(sfs[b])
+                        delta = max(-60, min(60, sf - prev_sf))
+                        encode_scalefactor_delta(sf_bw, delta)
+                        prev_sf += delta
+                    sf_bytes = sf_bw.to_bytes()
+                    # Unpack sf bytes back to code/length (each byte = 8 bits)
+                    for byte in sf_bytes[:-1]:
+                        fc.append(byte)
+                        fl.append(8)
+                    if sf_bw.bits_written % 8 != 0:
+                        remaining = sf_bw.bits_written % 8
+                        fc.append(sf_bytes[-1] >> (8 - remaining))
+                        fl.append(remaining)
+                    elif len(sf_bytes) > 0:
+                        fc.append(sf_bytes[-1])
+                        fl.append(8)
+
+                # --- Pulse/TNS/gain flags ---
+                fc.append(0)
+                fl.append(1)
+                fc.append(0)
+                fl.append(1)
+                fc.append(0)
+                fl.append(1)
+
+                if max_sfb > 0:
+                    # --- Spectral data (from GPU batch, numpy-vectorized extraction) ---
+                    frame_c = spec_codes[frame_idx]  # (G, 6)
+                    frame_l = spec_lengths[frame_idx]  # (G, 6)
+                    frame_a = spec_active[frame_idx]  # (G,)
+                    # Mask inactive groups, flatten, filter non-zero lengths
+                    active_c = frame_c[frame_a]  # (A, 6) where A = active groups
+                    active_l = frame_l[frame_a]  # (A, 6)
+                    flat_c = active_c.ravel()
+                    flat_l = active_l.ravel()
+                    nonzero = flat_l > 0
+                    fc.extend(flat_c[nonzero].tolist())
+                    fl.extend(flat_l[nonzero].tolist())
+
+                # Store this channel's ICS data
+                if ch == 0:
+                    ics_codes_l = fc
+                    ics_lengths_l = fl
+                else:
+                    ics_codes_r = fc
+                    ics_lengths_r = fl
+
+            # --- Assemble ADTS frame ---
+            all_codes: list[int] = []
+            all_lengths: list[int] = []
+
+            if C == 1:
+                all_codes.append(0)
+                all_lengths.append(7)  # SCE + tag
+                all_codes.extend(ics_codes_l)
+                all_lengths.extend(ics_lengths_l)
+            else:
+                all_codes.append(1)
+                all_lengths.append(3)  # CPE id
+                all_codes.append(0)
+                all_lengths.append(4)  # tag
+                all_codes.append(0)
+                all_lengths.append(1)  # common_window=0
+                all_codes.extend(ics_codes_l)
+                all_lengths.extend(ics_lengths_l)
+                all_codes.extend(ics_codes_r)
+                all_lengths.extend(ics_lengths_r)
+
+            all_codes.append(7)
+            all_lengths.append(3)  # ID_END
+            # Byte-align
+            total_bits = sum(all_lengths)
             pad = (8 - total_bits % 8) % 8
-            if pad > 0:
-                full_codes = np.append(full_codes, np.uint32(0))
-                full_lengths = np.append(full_lengths, np.uint8(pad))
+            if pad:
+                all_codes.append(0)
+                all_lengths.append(pad)
                 total_bits += pad
 
-            payload_bytes = (total_bits + 7) // 8
+            payload_bytes = total_bits // 8
             frame_len = ADTS_HEADER_SIZE + payload_bytes
 
-            # Pack payload via C
+            codes_arr = np.array(all_codes, dtype=np.uint32)
+            lengths_arr = np.array(all_lengths, dtype=np.uint8)
             output = np.zeros(payload_bytes + 16, dtype=np.uint8)
-            bitwriter_pack(full_codes, full_lengths, output)
-            payload = bytes(output[:payload_bytes])
+            bitwriter_pack(codes_arr, lengths_arr, output)
 
-            # Build ADTS header
+            # ADTS header
             header = bytearray(ADTS_HEADER_SIZE)
+            sr_idx = self.config.sample_rate_index
+            profile = AOT_AAC_LC - 1
+            ch_cfg = C
             header[0] = 0xFF
-            header[1] = 0xF1  # sync + MPEG-4 + layer 0 + no CRC
-            header[2] = (profile << 6) | (sr_idx << 2) | (0 << 1) | (1 >> 2)
-            header[3] = ((1 & 0x3) << 6) | ((frame_len >> 11) & 0x3)
+            header[1] = 0xF1
+            header[2] = (profile << 6) | (sr_idx << 2) | (0 << 1) | (ch_cfg >> 2)
+            header[3] = ((ch_cfg & 0x3) << 6) | ((frame_len >> 11) & 0x3)
             header[4] = (frame_len >> 3) & 0xFF
             header[5] = ((frame_len & 0x7) << 5) | 0x1F
-            header[6] = 0xFC  # buffer fullness VBR + 0 raw_data_blocks
+            header[6] = 0xFC
 
-            adts_frames.append(bytes(header) + payload)
+            adts_frames.append(bytes(header) + bytes(output[:payload_bytes]))
 
         return adts_frames
 

@@ -105,6 +105,7 @@ NUM_CODEBOOKS = 12  # 1-11, index 0 unused
 def select_codebooks(
     quantized: torch.Tensor,
     sfb_offsets: list[int],
+    pairs_only: bool = False,
 ) -> torch.Tensor:
     """Select the optimal Huffman codebook per scalefactor band section.
 
@@ -155,6 +156,13 @@ def select_codebooks(
 
     # For bands with all zeros, use codebook 0 (zero section)
     is_zero_band = max_abs_per_band < 0.5  # (N, sfb)
+
+    # In pairs_only mode (for GPU Huffman), mask out quad codebooks (1-4).
+    # They get remapped to the pair codebooks that cover the same range:
+    # cb1,cb2 (max=1) → cb5,cb6 (max=4); cb3,cb4 (max=2) → cb7,cb8 (max=7).
+    if pairs_only:
+        # Zero out quad codebook eligibility (indices 0-3 = cb1-4)
+        can_encode[..., :4] = False
 
     # Select smallest codebook that can encode. Prefer smaller for efficiency.
     invalid_penalty = torch.where(can_encode, 0, 1000)

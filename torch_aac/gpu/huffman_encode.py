@@ -434,3 +434,195 @@ def _get_cpu_tables(
         lengths = all_lengths.cpu().tolist()
         _cpu_tables_cache[key] = (codes, lengths)
     return _cpu_tables_cache[key]
+
+
+# ---------------------------------------------------------------------------
+# Batch-flattened GPU spectral encoding (pairs-only, all frames at once)
+# ---------------------------------------------------------------------------
+
+
+@lru_cache(maxsize=4)
+def _build_pair_group_map(
+    sfb_offsets_tuple: tuple[int, ...], device: torch.device
+) -> tuple[torch.Tensor, torch.Tensor, int]:
+    """Build static group map assuming dim=2 for all bands.
+
+    Returns:
+        group_band_idx: (G,) int — which SFB each group belongs to.
+        group_coef_start: (G,) int — starting coefficient index.
+        num_groups: total groups per frame.
+    """
+    band_indices: list[int] = []
+    coef_starts: list[int] = []
+    offsets = list(sfb_offsets_tuple)
+    num_sfb = len(offsets) - 1
+    for i in range(num_sfb):
+        s, e = offsets[i], offsets[i + 1]
+        if e > 1024:
+            break
+        for g_start in range(s, e, 2):
+            band_indices.append(i)
+            coef_starts.append(g_start)
+    return (
+        torch.tensor(band_indices, device=device, dtype=torch.long),
+        torch.tensor(coef_starts, device=device, dtype=torch.long),
+        len(band_indices),
+    )
+
+
+def encode_spectral_batched(
+    quantized: torch.Tensor,
+    codebooks: torch.Tensor,
+    sfb_offsets: list[int],
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Batch-vectorized spectral Huffman lookup for ALL frames at once.
+
+    All frames × all groups are processed in a single GPU gather. Only pair
+    codebooks (cb5-11) are expected — use ``select_codebooks(pairs_only=True)``
+    or remap cb1-4 before calling.
+
+    Args:
+        quantized: (N, 1024) int tensor — quantized spectral coefficients
+            (N = B*C, already flattened across batch and channels).
+        codebooks: (N, num_sfb) int — codebook per band.
+        sfb_offsets: cumulative SFB offsets.
+
+    Returns:
+        Tuple of numpy arrays, each shape (N, G, S) where G = groups/frame
+        and S = max entries per group (6: huff code, sign bits, 2× escape
+        prefix+mantissa):
+            - spectral_codes: uint32
+            - spectral_lengths: uint8
+            - active_mask: bool — True for groups that should be emitted
+    """
+    device = quantized.device
+    N = quantized.shape[0]
+    num_sfb = len(sfb_offsets) - 1
+
+    group_band, group_start, G = _build_pair_group_map(tuple(sfb_offsets), device)
+
+    # Property tables on device
+    base_t = torch.tensor(_BASE, device=device, dtype=torch.long)
+    offset_t = torch.tensor(_OFFSET, device=device, dtype=torch.long)
+    maxabs_t = torch.tensor(CODEBOOK_MAX_ABS, device=device, dtype=torch.long)
+    unsigned_t = torch.tensor(CODEBOOK_UNSIGNED, device=device, dtype=torch.bool)
+
+    all_codes_t, all_lengths_t = _build_gpu_tables(device)
+
+    quantized = quantized.long()  # ensure integer dtype for indexing
+
+    # --- Per-group codebook and active mask ---
+    # group_cb: (N, G) — codebook for each group
+    group_cb = codebooks[:, group_band]  # (N, G)
+    active = group_cb > 0  # (N, G) — skip cb=0 bands
+
+    # --- Gather coefficient pairs ---
+    coef_a_idx = group_start.unsqueeze(0).expand(N, -1)  # (N, G)
+    coef_b_idx = (group_start + 1).clamp(max=1023).unsqueeze(0).expand(N, -1)
+    coef_a = quantized.gather(1, coef_a_idx)  # (N, G)
+    coef_b = quantized.gather(1, coef_b_idx)  # (N, G)
+    # Zero out coef_b for odd-width band remainder (start+1 >= band_end)
+    band_end = torch.tensor(
+        [sfb_offsets[min(i + 1, num_sfb)] for i in range(num_sfb)],
+        device=device,
+        dtype=torch.long,
+    )
+    past_end = (group_start + 1) >= band_end[group_band]
+    coef_b = coef_b.masked_fill(past_end.unsqueeze(0).expand(N, -1), 0)
+
+    abs_a = coef_a.abs()
+    abs_b = coef_b.abs()
+
+    # --- Compute flat Huffman index ---
+    gb = base_t[group_cb]  # (N, G)
+    go = offset_t[group_cb]
+    gm = maxabs_t[group_cb]
+    is_unsigned = unsigned_t[group_cb]  # (N, G)
+
+    # Signed: idx = (a + offset) * base + (b + offset)
+    signed_idx = (coef_a + go) * gb + (coef_b + go)
+    # Unsigned: idx = clamp(|a|, max) * base + clamp(|b|, max)
+    ua = torch.minimum(abs_a, gm)
+    ub = torch.minimum(abs_b, gm)
+    unsigned_idx = ua * gb + ub
+
+    flat_idx = torch.where(is_unsigned, unsigned_idx, signed_idx)
+    flat_idx = flat_idx.clamp(0, _MAX_ENTRIES - 1)
+
+    # --- Gather Huffman codes/lengths ---
+    huff_codes = all_codes_t[group_cb, flat_idx]  # (N, G)
+    huff_lengths = all_lengths_t[group_cb, flat_idx]  # (N, G)
+
+    # --- Sign bits for unsigned codebooks ---
+    nz_a = abs_a > 0
+    nz_b = abs_b > 0
+    sign_a = (coef_a < 0).long()
+    sign_b = (coef_b < 0).long()
+    # Pack: both nonzero → 2 bits, one nonzero → 1 bit, none → 0 bits
+    num_sign = (nz_a.long() + nz_b.long()) * is_unsigned.long()
+    sign_val = (
+        torch.where(
+            nz_a & nz_b,
+            sign_a * 2 + sign_b,
+            torch.where(nz_a, sign_a, torch.where(nz_b, sign_b, torch.zeros_like(sign_a))),
+        )
+        * is_unsigned.long()
+    )
+
+    # --- Escape codes for cb11 values > 15 ---
+    is_cb11 = group_cb == 11
+    esc_a = is_cb11 & (abs_a > 15)
+    esc_b = is_cb11 & (abs_b > 15)
+
+    def _escape_fields(
+        av: torch.Tensor, mask: torch.Tensor
+    ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
+        """Compute escape prefix code/length and mantissa code/length."""
+        av = av.clamp(max=4095)
+        # N_esc = floor(log2(val)) - 4 = bit_length - 5
+        # Use log2 approximation: bit_length ≈ floor(log2(x)) + 1
+        bl = torch.floor(torch.log2(av.float().clamp(min=1))) + 1
+        n_esc = (bl.long() - 5).clamp(0, 8)
+        mantissa_bits = n_esc + 4
+        mantissa = av - (1 << mantissa_bits.clamp(max=12))  # avoid huge shifts
+        # Prefix: N ones + zero = ((1<<N)-1)<<1 in N+1 bits, or just 0 in 1 bit for N=0
+        prefix_code = torch.where(
+            n_esc > 0,
+            ((1 << n_esc) - 1) << 1,
+            torch.zeros_like(n_esc),
+        )
+        prefix_len = torch.where(n_esc > 0, n_esc + 1, torch.ones_like(n_esc))
+        # Zero out non-escape entries
+        prefix_code = prefix_code * mask.long()
+        prefix_len = prefix_len * mask.long()
+        mantissa = mantissa * mask.long()
+        mantissa_bits = mantissa_bits * mask.long()
+        return prefix_code, prefix_len, mantissa, mantissa_bits
+
+    esc_a_prefix, esc_a_plen, esc_a_mant, esc_a_mlen = _escape_fields(abs_a, esc_a)
+    esc_b_prefix, esc_b_plen, esc_b_mant, esc_b_mlen = _escape_fields(abs_b, esc_b)
+
+    # --- Pack into (N, G, 6) output: [huff, sign, esc_a_prefix, esc_a_mant, esc_b_prefix, esc_b_mant] ---
+    S = 6
+    out_codes = torch.zeros(N, G, S, device=device, dtype=torch.long)
+    out_lengths = torch.zeros(N, G, S, device=device, dtype=torch.long)
+
+    out_codes[:, :, 0] = huff_codes
+    out_lengths[:, :, 0] = huff_lengths
+    out_codes[:, :, 1] = sign_val
+    out_lengths[:, :, 1] = num_sign
+    out_codes[:, :, 2] = esc_a_prefix
+    out_lengths[:, :, 2] = esc_a_plen
+    out_codes[:, :, 3] = esc_a_mant
+    out_lengths[:, :, 3] = esc_a_mlen
+    out_codes[:, :, 4] = esc_b_prefix
+    out_lengths[:, :, 4] = esc_b_plen
+    out_codes[:, :, 5] = esc_b_mant
+    out_lengths[:, :, 5] = esc_b_mlen
+
+    # Transfer to CPU
+    codes_np = out_codes.cpu().numpy().astype(np.uint32)
+    lengths_np = out_lengths.cpu().numpy().astype(np.uint8)
+    active_np = active.cpu().numpy()
+
+    return codes_np, lengths_np, active_np
