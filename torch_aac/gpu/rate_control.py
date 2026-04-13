@@ -17,7 +17,7 @@ from torch_aac.gpu.quantizer import estimate_bit_count, quantize, quantize_per_b
 MIN_GAIN = 0
 MAX_GAIN = 255
 MAX_ITERATIONS = 12
-MAX_QUANTIZED_VALUE = 4095  # AAC escape code limit
+MAX_QUANTIZED_VALUE = 8191  # AAC escape code limit (N=8 → values up to 2^13-1)
 
 # Maximum per-band sf shift above the global gain (how much coarser a masked
 # band can be). Capped to avoid extreme shifts that overflow the 8-bit sf
@@ -69,6 +69,11 @@ def find_global_gain(
         bits = estimate_bit_count(q)
         if bits.dim() > 1:
             bits = bits.sum(dim=-1)
+
+        if q.dim() == 3:
+            max_q = q.abs().reshape(B, -1).max(dim=-1).values
+        else:
+            max_q = q.abs().max(dim=-1).values
 
         if q.dim() == 3:
             max_q = q.abs().reshape(B, -1).max(dim=-1).values

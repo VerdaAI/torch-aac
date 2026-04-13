@@ -209,7 +209,7 @@ _BITS_PER_COEF_TABLE: torch.Tensor | None = None
 
 
 def _build_bits_table(device: torch.device) -> torch.Tensor:
-    """Build a lookup table: bits_per_coefficient[|q|] for q in [0, 4096].
+    """Build a lookup table: bits_per_coefficient[|q|] for q in [0, 8192].
 
     Derived from actual AAC Huffman code lengths for pair codebooks (cb5-11).
     For each |q|, computes the cost of encoding the pair (±q, 0) in the
@@ -222,12 +222,12 @@ def _build_bits_table(device: torch.device) -> torch.Tensor:
     from torch_aac.tables.huffman_tables import CODEBOOK_UNSIGNED as CU
     from torch_aac.tables.huffman_tables import CODEBOOKS as CBS
 
-    table = torch.zeros(4097, dtype=torch.float32, device=device)
+    table = torch.zeros(8193, dtype=torch.float32, device=device)
 
     # Available pair codebooks in pairs_only mode: 5, 7, 9, 11
     pair_cbs = [(5, CMA[5]), (7, CMA[7]), (9, CMA[9]), (11, CMA[11])]
 
-    for q_abs in range(4097):
+    for q_abs in range(8193):
         # Find optimal codebook
         best_cb = 11
         for cb_num, ma in pair_cbs:
@@ -245,7 +245,7 @@ def _build_bits_table(device: torch.device) -> torch.Tensor:
             sign_bits = 1 if q_abs > 0 else 0
             escape_bits = 0
             if best_cb == 11 and q_abs > 15:
-                av = min(q_abs, 4095)
+                av = min(q_abs, 8191)
                 n = max(0, min(av.bit_length() - 5, 8))
                 escape_bits = (n + 1) + (n + 4)
             total = code_bits + sign_bits + escape_bits
@@ -278,7 +278,7 @@ def estimate_bit_count(
     if _BITS_PER_COEF_TABLE is None or _BITS_PER_COEF_TABLE.device != device:
         _BITS_PER_COEF_TABLE = _build_bits_table(device)
 
-    abs_q = quantized.abs().long().clamp(0, 4096)
+    abs_q = quantized.abs().long().clamp(0, 8192)
     cost = _BITS_PER_COEF_TABLE[abs_q]
 
     return cost.sum(dim=-1)

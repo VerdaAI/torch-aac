@@ -376,7 +376,7 @@ def _encode_spectral_bands_gpu(
                         v = q_list[pos + j]
                         av = -v if v < 0 else v
                         if av > 15:
-                            av = min(av, 4095)
+                            av = min(av, 8191)
                             n = max(0, min(av.bit_length() - 5, 8))
                             mantissa_bits = n + 4
                             mantissa = av - (1 << mantissa_bits)
@@ -583,7 +583,7 @@ def encode_spectral_batched(
         av: torch.Tensor, mask: torch.Tensor
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor, torch.Tensor]:
         """Compute escape prefix code/length and mantissa code/length."""
-        av = av.clamp(max=4095)
+        av = av.clamp(max=8191)
         # N_esc = floor(log2(val)) - 4 = bit_length - 5
         # Use log2 approximation: bit_length ≈ floor(log2(x)) + 1
         bl = torch.floor(torch.log2(av.float().clamp(min=1))) + 1

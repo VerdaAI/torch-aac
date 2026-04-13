@@ -134,9 +134,9 @@ def _encode_unsigned_group_fast(
 
 
 MAX_ESCAPE_N = 8
-"""Maximum escape sequence length. FFmpeg's decoder limits N to 8, allowing values up to 4095."""
+"""Maximum escape sequence length. FFmpeg's decoder limits N to 8."""
 
-MAX_ESCAPE_VAL = (1 << (MAX_ESCAPE_N + 4)) - 1  # 4095
+MAX_ESCAPE_VAL = (1 << (MAX_ESCAPE_N + 5)) - 1  # 8191
 
 
 def _encode_escape(writer: BitWriter, abs_val: int) -> None:

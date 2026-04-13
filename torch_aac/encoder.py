@@ -190,7 +190,6 @@ class AACEncoder:
         are zeroed, freeing ~4x more bits per active band.
         """
         flat = mdct_coeffs.reshape(-1, mdct_coeffs.shape[-1])
-        N = flat.shape[0]
         num_sfb = len(sfb_offsets) - 1
 
         # Frame-level peak amplitude
@@ -240,7 +239,7 @@ class AACEncoder:
         quantized = quantize_per_band(
             mdct_coeffs, scalefactors, self._sfb_offsets, mode=QuantMode.HARD
         )
-        quantized = quantized.clamp(-4095, 4095)
+        quantized = quantized.clamp(-8191, 8191)
 
         # 6. Codebook selection per channel
         q_flat = quantized.reshape(B * C, -1)
