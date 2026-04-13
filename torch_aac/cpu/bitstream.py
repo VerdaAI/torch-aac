@@ -17,42 +17,23 @@ from torch_aac.config import (
 )
 
 
-class BitWriter:
-    """Bit-level writer for constructing AAC bitstreams.
+class _PyBitWriter:
+    """Pure-Python bit-level writer (fallback when C extension unavailable)."""
 
-    Packs entire codewords in a single op using a bit accumulator; only
-    flushes whole bytes when the accumulator overflows. This avoids the
-    per-bit Python loop that dominated encode time (cProfile showed
-    55% of encode time in the old implementation).
-
-    Invariants:
-        - ``_accum`` holds the next ``_nbits`` unemitted bits, MSB-aligned
-          in a Python int. ``_nbits`` is in [0, 63].
-        - ``_total_bits`` is the total bit count written so far (including
-          whatever is still in ``_accum``).
-    """
+    __slots__ = ("_accum", "_buffer", "_byte_pos", "_nbits", "_total_bits")
 
     def __init__(self, capacity: int = 8192) -> None:
         self._buffer = bytearray(capacity)
         self._byte_pos = 0
-        self._accum = 0  # pending bits, MSB-aligned in _nbits
+        self._accum = 0
         self._nbits = 0
         self._total_bits = 0
 
     def write_bits(self, value: int, num_bits: int) -> None:
-        """Write ``num_bits`` bits from ``value`` (MSB first).
-
-        Args:
-            value: Integer value to write. Only the lowest ``num_bits`` are used.
-            num_bits: Number of bits to write (1-32).
-        """
-        # Append the new bits to the low end of the accumulator.
         mask = (1 << num_bits) - 1
         self._accum = (self._accum << num_bits) | (value & mask)
         self._nbits += num_bits
         self._total_bits += num_bits
-
-        # Drain whole bytes from the top of the accumulator.
         while self._nbits >= 8:
             self._nbits -= 8
             byte = (self._accum >> self._nbits) & 0xFF
@@ -60,29 +41,78 @@ class BitWriter:
                 self._buffer.extend(b"\x00" * 1024)
             self._buffer[self._byte_pos] = byte
             self._byte_pos += 1
-            # Clear the emitted bits to keep _accum small.
             self._accum &= (1 << self._nbits) - 1 if self._nbits else 0
 
     @property
     def bits_written(self) -> int:
-        """Total number of bits written."""
         return self._total_bits
 
     def to_bytes(self) -> bytes:
-        """Return the accumulated bytes (including partial last byte)."""
         if self._nbits == 0:
             return bytes(self._buffer[: self._byte_pos])
-        # Flush the partial byte, left-aligned (MSB first).
         if self._byte_pos >= len(self._buffer):
             self._buffer.extend(b"\x00" * 1)
         self._buffer[self._byte_pos] = (self._accum << (8 - self._nbits)) & 0xFF
         return bytes(self._buffer[: self._byte_pos + 1])
 
     def align_to_byte(self) -> None:
-        """Pad with zero bits to the next byte boundary."""
         if self._nbits > 0:
-            pad = 8 - self._nbits
-            self.write_bits(0, pad)
+            self.write_bits(0, 8 - self._nbits)
+
+
+class _CBitWriter:
+    """Deferred-packing BitWriter backed by the C extension.
+
+    Collects ``(code, length)`` pairs in Python lists (O(1) amortized
+    append), then packs them all at once via the C ``bitwriter_pack`` in
+    ``to_bytes()``. This eliminates the per-call Python accumulator math
+    that dominated the profile.
+    """
+
+    __slots__ = ("_codes", "_lengths", "_total_bits")
+
+    def __init__(self, capacity: int = 8192) -> None:
+        self._codes: list[int] = []
+        self._lengths: list[int] = []
+        self._total_bits = 0
+
+    def write_bits(self, value: int, num_bits: int) -> None:
+        self._codes.append(value)
+        self._lengths.append(num_bits)
+        self._total_bits += num_bits
+
+    @property
+    def bits_written(self) -> int:
+        return self._total_bits
+
+    def to_bytes(self) -> bytes:
+        from torch_aac.cpu._bitwriter_native import bitwriter_pack
+
+        codes = np.array(self._codes, dtype=np.uint32)
+        lengths = np.array(self._lengths, dtype=np.uint8)
+        out_size = max(1024, (self._total_bits + 7) // 8 + 16)
+        output = np.zeros(out_size, dtype=np.uint8)
+        total = bitwriter_pack(codes, lengths, output)
+        return bytes(output[: (total + 7) // 8])
+
+    def align_to_byte(self) -> None:
+        if self._total_bits % 8 != 0:
+            self.write_bits(0, 8 - (self._total_bits % 8))
+
+
+def _select_bitwriter() -> type:
+    """Pick the fastest available BitWriter implementation."""
+    try:
+        from torch_aac.cpu._bitwriter_native import is_available
+
+        if is_available():
+            return _CBitWriter
+    except ImportError:
+        pass
+    return _PyBitWriter
+
+
+BitWriter = _select_bitwriter()
 
 
 def write_adts_header(
