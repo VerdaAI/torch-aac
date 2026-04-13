@@ -90,10 +90,11 @@ class AACEncoder:
             self._use_gpu_huffman = is_available()
         except ImportError:
             self._use_gpu_huffman = False
-        # PNS infrastructure is complete (detection + bitstream protocol) but
-        # the noise energy calibration (sfo → decoded amplitude) needs tuning.
-        # Disable by default until the +C correction factor is empirically
-        # determined. Enable with encoder._enable_pns = True for testing.
+        # PNS: calibrated (C=64) and structurally correct, but disabled by
+        # default because it replaces correlated signal with uncorrelated noise,
+        # which degrades speech SNR (11.8 → 6.0 dB at 128k). Needs a spectral
+        # flatness criterion to distinguish true noise from speech formants.
+        # Enable for pure-noise workloads via encoder._enable_pns = True.
         self._enable_pns = False
 
     def encode(self, pcm: np.ndarray | torch.Tensor) -> bytes:

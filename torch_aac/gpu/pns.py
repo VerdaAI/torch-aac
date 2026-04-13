@@ -17,7 +17,7 @@ import torch
 # Compensates for the MDCT normalization mismatch between our unnormalized
 # forward MDCT and FFmpeg's PNS noise generator. Set to 0 and sweep
 # until rms_ratio ≈ 1.0 on white noise to calibrate.
-PNS_ENERGY_CORRECTION: int = 0
+PNS_ENERGY_CORRECTION: int = 64
 
 
 def detect_noise_bands(
@@ -71,13 +71,20 @@ def detect_noise_bands(
         band_max_q[:, i] = flat_q[:, s:e].abs().max(dim=-1).values
         band_nnz[:, i] = (flat_q[:, s:e] != 0).sum(dim=-1).float()
 
+    # Peak band energy per frame (for relative threshold)
+    peak_energy = band_energy.max(dim=-1, keepdim=True).values.clamp(min=1e-20)
+
     # Conditions
     is_active = flat_cb > 0  # non-zero codebook
     is_low_q = band_max_q <= max_abs_threshold
     density = band_nnz / band_width.clamp(min=1).unsqueeze(0)
     is_spread = density >= density_threshold
+    # Only use PNS for bands with meaningful energy — bands at the noise
+    # floor of a tonal signal should stay as spectral (their tiny q=±1
+    # contribution is quieter than what PNS would generate).
+    is_significant = (band_energy / peak_energy) > 0.001
 
-    mask = is_active & is_low_q & is_spread
+    mask = is_active & is_low_q & is_spread & is_significant
 
     return mask.reshape(codebook_indices.shape)
 

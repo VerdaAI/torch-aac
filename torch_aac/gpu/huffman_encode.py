@@ -505,6 +505,7 @@ def encode_spectral_batched(
     # Property tables on device — pad to 14 entries to handle NOISE_BT=13 safely
     def _pad(lst, n):
         return lst + [lst[0]] * (n - len(lst))
+
     base_t = torch.tensor(_pad(_BASE, 14), device=device, dtype=torch.long)
     offset_t = torch.tensor(_pad(_OFFSET, 14), device=device, dtype=torch.long)
     maxabs_t = torch.tensor(_pad(CODEBOOK_MAX_ABS, 14), device=device, dtype=torch.long)
