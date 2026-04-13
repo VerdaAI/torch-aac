@@ -4,6 +4,7 @@
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
 [![License: ELv2](https://img.shields.io/badge/license-ELv2-green.svg)](LICENSE)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg)](https://pytorch.org)
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/VerdaAI/torch-aac/blob/main/examples/demo.ipynb)
 
 **The first open-source GPU-accelerated, differentiable AAC-LC encoder.**
 
