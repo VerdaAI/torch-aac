@@ -16,6 +16,7 @@ from torch_aac.tables.huffman_tables import (
     CODEBOOK_DIMENSION,
     CODEBOOK_MAX_ABS,
     CODEBOOK_UNSIGNED,
+    CODEBOOKS,
     get_codebook_entry,
 )
 
@@ -46,75 +47,90 @@ def encode_spectral_band(
     if remainder != 0:
         band_data = np.pad(band_data, (0, dim - remainder))
 
-    for i in range(0, len(band_data), dim):
-        group = band_data[i : i + dim]
+    # Convert to a Python list of ints once — list iteration + indexing is
+    # much cheaper than numpy element access in a tight loop.
+    values_list = band_data.tolist()
+    n = len(values_list)
 
-        if is_unsigned:
-            # Unsigned codebooks: encode absolute values, then sign bits
-            abs_group = np.abs(group)
-            _encode_unsigned_group(writer, group, abs_group, codebook, dim)
-        else:
-            # Signed codebooks: encode values directly (with offset)
-            _encode_signed_group(writer, group, codebook)
-
-
-def _encode_signed_group(
-    writer: BitWriter,
-    values: NDArray[np.int32],
-    codebook: int,
-) -> None:
-    """Encode a group using a signed codebook (1-2, 5-6)."""
-    key = tuple(int(v) for v in values)
-    try:
-        codeword, length = get_codebook_entry(codebook, key)
-        writer.write_bits(codeword, length)
-    except (KeyError, ValueError):
-        # Fallback: clamp values to codebook range and retry
+    if is_unsigned:
         max_abs = CODEBOOK_MAX_ABS[codebook]
-        clamped = tuple(max(-max_abs, min(max_abs, int(v))) for v in values)
-        codeword, length = get_codebook_entry(codebook, clamped)
-        writer.write_bits(codeword, length)
+        clamp_to = 16 if codebook == 11 else max_abs
+        is_cb11 = codebook == 11
+        for i in range(0, n, dim):
+            _encode_unsigned_group_fast(writer, values_list, i, dim, codebook, clamp_to, is_cb11)
+    else:
+        for i in range(0, n, dim):
+            _encode_signed_group_fast(writer, values_list, i, dim, codebook)
 
 
-def _encode_unsigned_group(
+def _encode_signed_group_fast(
     writer: BitWriter,
-    values: NDArray[np.int32],
-    abs_values: NDArray[np.int32],
-    codebook: int,
+    values_list: list,
+    start: int,
     dim: int,
+    codebook: int,
 ) -> None:
-    """Encode a group using an unsigned codebook (3-4, 7-11).
+    """Encode a signed-codebook group directly from a Python list slice."""
+    key = tuple(values_list[start : start + dim])
+    entry = CODEBOOKS[codebook].get(key) if CODEBOOKS[codebook] is not None else None  # type: ignore[union-attr]
+    if entry is None:
+        max_abs = CODEBOOK_MAX_ABS[codebook]
+        clamped = tuple(max(-max_abs, min(max_abs, v)) for v in key)
+        entry = get_codebook_entry(codebook, clamped)
+    writer.write_bits(entry[0], entry[1])
 
-    Writes the Huffman code for the absolute values, then appends
-    a sign bit (0=positive, 1=negative) for each non-zero value.
+
+def _encode_unsigned_group_fast(
+    writer: BitWriter,
+    values_list: list,
+    start: int,
+    dim: int,
+    codebook: int,
+    clamp_to: int,
+    is_cb11: bool,
+) -> None:
+    """Encode an unsigned-codebook group directly from a Python list slice.
+
+    Packs all non-zero sign bits into a single ``write_bits`` call. For
+    codebook 11, escape mantissas are emitted after the sign bits.
     """
-    max_abs = CODEBOOK_MAX_ABS[codebook]
+    # Build abs-tuple (for dict lookup) and collect sign-bit info in one pass.
+    # Also tracks whether any value exceeds 15 (triggers cb11 escape).
+    signs = 0
+    nnz = 0
+    abs_key: list[int] = [0] * dim
+    any_escape = False
+    for j in range(dim):
+        v = values_list[start + j]
+        av = -v if v < 0 else v
+        if av > clamp_to:
+            abs_key[j] = clamp_to
+        else:
+            abs_key[j] = av
+        if av != 0:
+            signs = (signs << 1) | (1 if v < 0 else 0)
+            nnz += 1
+        if is_cb11 and av > 15:
+            any_escape = True
 
-    # Codebook 11 uses escape for values > 15 (Huffman entry at index 16
-    # indicates escape); other books clamp at their max_abs.
-    lookup_vals = np.minimum(abs_values, 16 if codebook == 11 else max_abs)
-
-    key = tuple(int(v) for v in lookup_vals)
-    try:
-        codeword, length = get_codebook_entry(codebook, key)
-        writer.write_bits(codeword, length)
-    except (KeyError, ValueError):
-        # Zero fallback
-        zero_key = tuple(0 for _ in range(dim))
-        codeword, length = get_codebook_entry(codebook, zero_key)
-        writer.write_bits(codeword, length)
+    key = tuple(abs_key)
+    entry = CODEBOOKS[codebook].get(key) if CODEBOOKS[codebook] is not None else None  # type: ignore[union-attr]
+    if entry is None:
+        # Zero fallback — emit the all-zeros codeword and bail.
+        entry = get_codebook_entry(codebook, (0,) * dim)
+        writer.write_bits(entry[0], entry[1])
         return
 
-    # Append sign bits for non-zero values
-    for j in range(dim):
-        if abs_values[j] != 0:
-            writer.write_bits(1 if values[j] < 0 else 0, 1)
+    writer.write_bits(entry[0], entry[1])
+    if nnz:
+        writer.write_bits(signs, nnz)
 
-    # Escape codes for codebook 11 values > 15
-    if codebook == 11:
+    if any_escape:
         for j in range(dim):
-            if abs_values[j] > 15:
-                _encode_escape(writer, int(abs_values[j]))
+            v = values_list[start + j]
+            av = -v if v < 0 else v
+            if av > 15:
+                _encode_escape(writer, av)
 
 
 MAX_ESCAPE_N = 8
