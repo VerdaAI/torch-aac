@@ -2,6 +2,7 @@
 
 | Version | Date       | Summary |
 |---------|------------|---------|
+| 0.2.0   | 2026-04-14 | torchaudio integration, Colab demo, CI/PyPI workflows, per-directory docs |
 | 0.1.0   | 2026-04-13 | First public release — GPU-accelerated differentiable AAC-LC encoder, beats Apple AudioToolbox on SNR, ~97x realtime, CUDA/MPS/CPU |
 
 ---

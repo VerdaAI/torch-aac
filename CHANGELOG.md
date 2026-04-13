@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.2.0 (2026-04-14)
+
+Integrations, tooling, and documentation release.
+
+### Added
+- **torchaudio integration**: `AACSimulation` differentiable transform for training pipelines, `AACEncode` for evaluation, `save_aac()` / `load_aac()` with torchaudio-like API. Compatible with `torch.nn.Sequential`.
+- **Colab demo notebook**: `examples/demo.ipynb` with Open in Colab badge. Interactive demo of encoding, quality benchmarks, differentiable training, and speed measurement.
+- **CI workflow**: Lint (ruff), test matrix (Python 3.10/3.11/3.12), encode smoke test (amplitude assertion), differentiable gradient check, batch encode verification. Concurrency control.
+- **PyPI publish workflow**: Trusted publishing via OIDC on GitHub Release. Builds sdist + wheel with C source included.
+- **`/release` command**: Slash command for version management — bumps version in `__init__.py` + `pyproject.toml`, generates changelog, tags, pushes.
+- **Per-directory READMEs**: Every package directory (`gpu/`, `cpu/`, `tables/`, `benchmark/`, `examples/`, `tests/`, `docs/`) has a README explaining contents and architecture.
+- **VERSIONS.md**: Quick-reference version history table.
+- **CI badges**: CI status, Python version, license, PyTorch, Open in Colab.
+
+### Changed
+- PyPI package URLs updated to `github.com/VerdaAI/torch-aac`.
+- Hatch build config: explicit sdist/wheel includes, C source force-included in wheel.
+
+---
+
 ## v0.1.0 (2026-04-13)
 
 First public release. GPU-accelerated, differentiable AAC-LC encoder.
