@@ -12,10 +12,18 @@ from pathlib import Path
 import numpy as np
 import torch
 
-from torch_aac.config import AAC_FRAME_LENGTH, AAC_WINDOW_LENGTH, EncoderConfig, QuantMode
+from torch_aac.config import (
+    AAC_FRAME_LENGTH,
+    AAC_WINDOW_LENGTH,
+    ADTS_HEADER_SIZE,
+    AOT_AAC_LC,
+    EncoderConfig,
+    QuantMode,
+)
 from torch_aac.cpu.bitstream import build_adts_frame
 from torch_aac.cpu.huffman import encode_spectral_band
 from torch_aac.gpu.filterbank import apply_window, frame_audio, mdct
+from torch_aac.gpu.huffman_encode import encode_spectral_gpu
 from torch_aac.gpu.huffman_select import select_codebooks
 from torch_aac.gpu.quantizer import quantize_per_band
 from torch_aac.gpu.rate_control import compute_scalefactors, find_global_gain
@@ -75,6 +83,13 @@ class AACEncoder:
                 self._batch_size = 256
         else:
             self._batch_size = batch_size
+
+        # GPU Huffman path exists (gpu/huffman_encode.py) but is currently
+        # slower than the CPU+C path for single-stream encoding due to Python
+        # per-group overhead. It would win for multi-stream batching (100+
+        # streams simultaneously) where the GPU gather amortizes launch cost.
+        # For now, default to the fast CPU+C path.
+        self._use_gpu_huffman = False
 
     def encode(self, pcm: np.ndarray | torch.Tensor) -> bytes:
         """Encode PCM audio to AAC-LC ADTS bytes.
@@ -200,13 +215,18 @@ class AACEncoder:
         codebooks = select_codebooks(q_flat, self._sfb_offsets)
         codebooks = codebooks.reshape(B, C, -1)
 
-        # === Transfer to CPU ===
+        # === Mono fast path: GPU Huffman + C bit-packing ===
+        if C == 1 and self._use_gpu_huffman:
+            return self._encode_batch_gpu_huffman(
+                quantized, codebooks, scalefactors, global_gains, B
+            )
+
+        # === Fallback: CPU Huffman (stereo, or when C extension unavailable) ===
         quantized_np = quantized.cpu().numpy().astype(np.int32)
         codebooks_np = codebooks.cpu().numpy().astype(np.int32)
         gains_np = global_gains.cpu().numpy().astype(np.int32)
         sf_np = scalefactors.cpu().numpy().astype(np.int32)
 
-        # === CPU stages ===
         adts_frames: list[bytes] = []
 
         for i in range(B):
@@ -235,6 +255,95 @@ class AACEncoder:
                     scalefactors_r=sf_np[i, 1],
                 )
             adts_frames.append(frame_bytes)
+
+        return adts_frames
+
+    def _encode_batch_gpu_huffman(
+        self,
+        quantized: torch.Tensor,
+        codebooks: torch.Tensor,
+        scalefactors: torch.Tensor,
+        global_gains: torch.Tensor,
+        B: int,
+    ) -> list[bytes]:
+        """Fast path: GPU Huffman lookup + C bit-packing (mono only).
+
+        The GPU produces (codes, lengths) arrays for each frame's ICS payload
+        via vectorized table gathers. The C bitwriter_pack then packs these
+        into bytes. ADTS header is prepended on CPU.
+        """
+        from torch_aac.cpu._bitwriter_native import bitwriter_pack
+
+        # GPU Huffman lookup for all frames: returns list of (codes_np, lengths_np)
+        ics_pairs = encode_spectral_gpu(
+            quantized[:, 0, :],  # (B, 1024) mono channel
+            codebooks[:, 0, :],  # (B, num_sfb)
+            scalefactors[:, 0, :],  # (B, num_sfb)
+            global_gains,
+            self._sfb_offsets,
+        )
+
+        # ADTS header constants
+        sr_idx = {
+            96000: 0,
+            88200: 1,
+            64000: 2,
+            48000: 3,
+            44100: 4,
+            32000: 5,
+            24000: 6,
+            22050: 7,
+            16000: 8,
+            12000: 9,
+            11025: 10,
+            8000: 11,
+        }.get(self.config.sample_rate, 3)
+        profile = AOT_AAC_LC - 1  # 1 for LC in ADTS
+
+        adts_frames: list[bytes] = []
+
+        for i in range(B):
+            codes_np, lengths_np = ics_pairs[i]
+
+            # Prepend element framing: ID_SCE(0, 3 bits) + tag(0, 4 bits)
+            # Append: ID_END(7, 3 bits)
+            n = len(codes_np)
+            full_codes = np.empty(n + 2, dtype=np.uint32)
+            full_lengths = np.empty(n + 2, dtype=np.uint8)
+            full_codes[0] = 0  # SCE=0 (3 bits) + tag=0 (4 bits) = 7 bits as one field
+            full_lengths[0] = 7
+            full_codes[1 : n + 1] = codes_np
+            full_lengths[1 : n + 1] = lengths_np
+            full_codes[n + 1] = 7  # ID_END
+            full_lengths[n + 1] = 3
+
+            # Total payload bits → pad to byte boundary
+            total_bits = int(full_lengths.sum())
+            pad = (8 - total_bits % 8) % 8
+            if pad > 0:
+                full_codes = np.append(full_codes, np.uint32(0))
+                full_lengths = np.append(full_lengths, np.uint8(pad))
+                total_bits += pad
+
+            payload_bytes = (total_bits + 7) // 8
+            frame_len = ADTS_HEADER_SIZE + payload_bytes
+
+            # Pack payload via C
+            output = np.zeros(payload_bytes + 16, dtype=np.uint8)
+            bitwriter_pack(full_codes, full_lengths, output)
+            payload = bytes(output[:payload_bytes])
+
+            # Build ADTS header
+            header = bytearray(ADTS_HEADER_SIZE)
+            header[0] = 0xFF
+            header[1] = 0xF1  # sync + MPEG-4 + layer 0 + no CRC
+            header[2] = (profile << 6) | (sr_idx << 2) | (0 << 1) | (1 >> 2)
+            header[3] = ((1 & 0x3) << 6) | ((frame_len >> 11) & 0x3)
+            header[4] = (frame_len >> 3) & 0xFF
+            header[5] = ((frame_len & 0x7) << 5) | 0x1F
+            header[6] = 0xFC  # buffer fullness VBR + 0 raw_data_blocks
+
+            adts_frames.append(bytes(header) + payload)
 
         return adts_frames
 
