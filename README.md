@@ -6,7 +6,7 @@ GPU-accelerated and differentiable AAC-LC encoder using PyTorch.
 
 ## Features
 
-- **GPU-accelerated**: Batch-encode thousands of AAC frames simultaneously on CUDA
+- **GPU-accelerated**: ~97x realtime on CPU, ~67x on Apple MPS. Batch-encode thousands of AAC frames simultaneously on CUDA/MPS
 - **Differentiable**: Backpropagate through AAC encoding for codec-robust model training (STE + noise injection modes)
 - **Standard output**: Produces valid AAC-LC ADTS bitstreams decodable by FFmpeg, VLC, and browsers
 - **CPU fallback**: Works without a GPU via PyTorch CPU mode
