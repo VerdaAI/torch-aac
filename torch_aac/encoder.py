@@ -298,6 +298,10 @@ class AACEncoder:
         """
         from torch_aac.cpu._bitwriter_native import bitwriter_pack
         from torch_aac.gpu.huffman_encode import encode_spectral_batched
+        from torch_aac.tables.huffman_tables import SCALEFACTOR_BITS, SCALEFACTOR_CODE
+
+        sf_code_table = SCALEFACTOR_CODE
+        sf_bits_table = SCALEFACTOR_BITS
 
         C = quantized.shape[1]
 
@@ -315,9 +319,10 @@ class AACEncoder:
         sf_np = scalefactors.cpu().numpy().astype(np.int32)
         cb_np = codebooks.cpu().numpy().astype(np.int32)
         num_sfb = len(self._sfb_offsets) - 1
-
-        from torch_aac.cpu.bitstream import _PyBitWriter
-        from torch_aac.cpu.scalefactor import encode_scalefactor_delta
+        sr_idx = self.config.sample_rate_index
+        profile = AOT_AAC_LC - 1
+        # Pre-allocate reusable output buffer for C bitwriter
+        pack_buf = np.zeros(8192, dtype=np.uint8)
 
         adts_frames: list[bytes] = []
 
@@ -372,28 +377,17 @@ class AACEncoder:
                         fl.append(5)
                         si += run
 
-                    # --- Scalefactor data ---
+                    # --- Scalefactor data (direct VLC code/length, no BitWriter) ---
                     prev_sf = gg
-                    sf_bw = _PyBitWriter(256)
                     for b in range(max_sfb):
                         if cbs[b] == 0:
                             continue
                         sf = int(sfs[b])
                         delta = max(-60, min(60, sf - prev_sf))
-                        encode_scalefactor_delta(sf_bw, delta)
+                        idx = delta + 60
+                        fc.append(sf_code_table[idx])
+                        fl.append(sf_bits_table[idx])
                         prev_sf += delta
-                    sf_bytes = sf_bw.to_bytes()
-                    # Unpack sf bytes back to code/length (each byte = 8 bits)
-                    for byte in sf_bytes[:-1]:
-                        fc.append(byte)
-                        fl.append(8)
-                    if sf_bw.bits_written % 8 != 0:
-                        remaining = sf_bw.bits_written % 8
-                        fc.append(sf_bytes[-1] >> (8 - remaining))
-                        fl.append(remaining)
-                    elif len(sf_bytes) > 0:
-                        fc.append(sf_bytes[-1])
-                        fl.append(8)
 
                 # --- Pulse/TNS/gain flags ---
                 fc.append(0)
@@ -461,23 +455,31 @@ class AACEncoder:
 
             codes_arr = np.array(all_codes, dtype=np.uint32)
             lengths_arr = np.array(all_lengths, dtype=np.uint8)
-            output = np.zeros(payload_bytes + 16, dtype=np.uint8)
-            bitwriter_pack(codes_arr, lengths_arr, output)
+            # Reuse pre-allocated buffer if large enough
+            if payload_bytes + 16 <= len(pack_buf):
+                pack_buf[: payload_bytes + 16] = 0
+                bitwriter_pack(codes_arr, lengths_arr, pack_buf)
+                payload = bytes(pack_buf[:payload_bytes])
+            else:
+                tmp = np.zeros(payload_bytes + 16, dtype=np.uint8)
+                bitwriter_pack(codes_arr, lengths_arr, tmp)
+                payload = bytes(tmp[:payload_bytes])
 
-            # ADTS header
-            header = bytearray(ADTS_HEADER_SIZE)
-            sr_idx = self.config.sample_rate_index
-            profile = AOT_AAC_LC - 1
-            ch_cfg = C
-            header[0] = 0xFF
-            header[1] = 0xF1
-            header[2] = (profile << 6) | (sr_idx << 2) | (0 << 1) | (ch_cfg >> 2)
-            header[3] = ((ch_cfg & 0x3) << 6) | ((frame_len >> 11) & 0x3)
-            header[4] = (frame_len >> 3) & 0xFF
-            header[5] = ((frame_len & 0x7) << 5) | 0x1F
-            header[6] = 0xFC
-
-            adts_frames.append(bytes(header) + bytes(output[:payload_bytes]))
+            # ADTS header (7 bytes, inline construction)
+            adts_frames.append(
+                bytes(
+                    [
+                        0xFF,
+                        0xF1,
+                        (profile << 6) | (sr_idx << 2) | (C >> 2),
+                        ((C & 0x3) << 6) | ((frame_len >> 11) & 0x3),
+                        (frame_len >> 3) & 0xFF,
+                        ((frame_len & 0x7) << 5) | 0x1F,
+                        0xFC,
+                    ]
+                )
+                + payload
+            )
 
         return adts_frames
 
