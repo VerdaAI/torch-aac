@@ -1,0 +1,11 @@
+# Version History
+
+| Version | Date       | Summary |
+|---------|------------|---------|
+| 0.1.0   | 2026-04-13 | First public release — GPU-accelerated differentiable AAC-LC encoder, beats Apple AudioToolbox on SNR, ~97x realtime, CUDA/MPS/CPU |
+
+---
+
+## Detailed Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for full details per release.
