@@ -179,6 +179,7 @@ def write_single_channel_element(
     huffman_encode_fn: object,
     scalefactors: NDArray[np.int32] | None = None,
     noise_scalefactors: NDArray[np.int32] | None = None,
+    window_sequence: int = 0,
 ) -> None:
     """Write a single_channel_element (SCE) to the bitstream."""
     writer.write_bits(0b000, 3)
@@ -192,6 +193,7 @@ def write_single_channel_element(
         huffman_encode_fn,
         scalefactors,
         noise_scalefactors,
+        window_sequence=window_sequence,
     )
 
 
@@ -242,48 +244,121 @@ def _write_ics(
     huffman_encode_fn: object,
     scalefactors: NDArray[np.int32] | None = None,
     noise_scalefactors: NDArray[np.int32] | None = None,
+    window_sequence: int = 0,
+    num_window_groups: int = 1,
+    group_len: list[int] | None = None,
 ) -> None:
-    """Write an individual_channel_stream (ICS)."""
+    """Write an individual_channel_stream (ICS).
+
+    Supports both long blocks (window_sequence=0,1,3) and short blocks
+    (window_sequence=2). For short blocks, the ICS header includes
+    scale_factor_grouping and section data uses 3-bit length fields.
+    """
+    is_short = window_sequence == 2
     num_sfb_total = len(sfb_offsets) - 1
 
-    MAX_SFB_LIMIT = 49
+    max_sfb_limit = 15 if is_short else 49
     max_sfb = 0
-    for i in range(min(num_sfb_total, MAX_SFB_LIMIT)):
+    for i in range(min(num_sfb_total, max_sfb_limit)):
         if int(codebook_indices[i]) != 0:
             max_sfb = i + 1
-    max_sfb = min(max_sfb, MAX_SFB_LIMIT)
+    max_sfb = min(max_sfb, max_sfb_limit)
 
     # global_gain (8 bits)
     writer.write_bits(global_gain & 0xFF, 8)
 
     # --- ics_info ---
     writer.write_bits(0, 1)  # ics_reserved_bit
-    writer.write_bits(0, 2)  # window_sequence: ONLY_LONG_SEQUENCE
-    writer.write_bits(0, 1)  # window_shape: 0=sine, 1=KBD
-    writer.write_bits(max_sfb, 6)  # max_sfb
-    writer.write_bits(0, 1)  # predictor_data_present: 0
+    writer.write_bits(window_sequence, 2)  # window_sequence
+    writer.write_bits(0, 1)  # window_shape: 0=sine
+
+    if is_short:
+        writer.write_bits(max_sfb, 4)  # max_sfb (4 bits for short)
+        # scale_factor_grouping: 7 bits, one per window boundary.
+        # Bit=1 means this window is grouped with the next.
+        # For no grouping (8 independent groups): 0b0000000 = 0.
+        # For all-grouped (1 group of 8): 0b1111111 = 127.
+        if group_len is None:
+            # Default: no grouping (8 groups of 1 window each)
+            writer.write_bits(0, 7)
+            num_window_groups = 8
+            group_len = [1] * 8
+        else:
+            # Encode grouping: bit i = 1 if window i+1 is in same group as window i
+            grouping_bits = 0
+            win_idx = 0
+            for g in range(len(group_len)):
+                for w in range(1, group_len[g]):
+                    grouping_bits |= 1 << (6 - (win_idx + w - 1))
+                win_idx += group_len[g]
+            writer.write_bits(grouping_bits, 7)
+            num_window_groups = len(group_len)
+    else:
+        writer.write_bits(max_sfb, 6)  # max_sfb (6 bits for long)
+        writer.write_bits(0, 1)  # predictor_data_present: 0
+        num_window_groups = 1
+        group_len = [1]
 
     if max_sfb > 0:
-        active_codebooks = codebook_indices[:max_sfb]
+        # For short blocks: section/sf/spectral data is repeated per group.
+        # Each group covers group_len[g] windows.
+        # For V1 with no grouping: 8 groups, each with 1 window.
+        sect_bits = 3 if is_short else 5
+        sect_escape = (1 << sect_bits) - 1
 
-        # --- section_data ---
-        _write_section_data(writer, active_codebooks, max_sfb)
+        for g in range(num_window_groups):
+            g * 128 if is_short else 0
+            active_cb = codebook_indices[:max_sfb]
 
-        # --- scalefactor_data ---
-        active_sf = scalefactors[:max_sfb] if scalefactors is not None else None
-        active_nsf = noise_scalefactors[:max_sfb] if noise_scalefactors is not None else None
-        _write_scalefactor_data(
-            writer, max_sfb, active_codebooks, global_gain, active_sf, active_nsf
-        )
+            # --- section_data ---
+            _write_section_data(writer, active_cb, max_sfb, sect_bits, sect_escape)
+
+        # --- scalefactor_data (all groups, sequential) ---
+        # Scalefactors are delta-encoded across all groups sequentially
+        active_sf = scalefactors if scalefactors is not None else None
+        active_nsf = noise_scalefactors if noise_scalefactors is not None else None
+        if is_short:
+            # For short blocks: num_window_groups * max_sfb entries
+            total_sfb = num_window_groups * max_sfb
+            sf_for_write = active_sf[:total_sfb] if active_sf is not None else None
+            cb_for_write = np.tile(codebook_indices[:max_sfb], num_window_groups)
+            _write_scalefactor_data(writer, total_sfb, cb_for_write, global_gain, sf_for_write)
+        else:
+            _write_scalefactor_data(
+                writer,
+                max_sfb,
+                codebook_indices[:max_sfb],
+                global_gain,
+                active_sf[:max_sfb] if active_sf is not None else None,
+                active_nsf[:max_sfb] if active_nsf is not None else None,
+            )
 
     # --- pulse, TNS, gain control flags ---
-    writer.write_bits(0, 1)  # pulse_data_present: 0
+    if not is_short:
+        writer.write_bits(0, 1)  # pulse_data_present (not for short blocks)
     writer.write_bits(0, 1)  # tns_data_present: 0
     writer.write_bits(0, 1)  # gain_control_data_present: 0
 
     if max_sfb > 0:
         # --- spectral_data ---
-        _write_spectral_data(writer, quantized, active_codebooks, sfb_offsets, huffman_encode_fn)
+        if is_short:
+            # Write spectral data for each group's windows
+            for g in range(num_window_groups):
+                for w in range(group_len[g]):
+                    win_idx = sum(group_len[:g]) + w
+                    offset = win_idx * 128
+                    win_data = quantized[offset : offset + 128]
+                    _write_spectral_data(
+                        writer,
+                        win_data,
+                        codebook_indices[:max_sfb],
+                        sfb_offsets,
+                        huffman_encode_fn,
+                    )
+        else:
+            _write_spectral_data(
+                writer, quantized, codebook_indices[:max_sfb], sfb_offsets, huffman_encode_fn
+            )
 
 
 def _write_zero_frame_data(
@@ -317,13 +392,15 @@ def _write_section_data(
     writer: BitWriter,
     codebook_indices: NDArray[np.int32],
     num_sfb: int,
+    sect_bits: int = 5,
+    sect_escape: int = 31,
 ) -> None:
     """Write section data — groups consecutive bands with the same codebook.
 
-    For long windows, section_len uses 5-bit fields. A section_len value of
-    31 (0b11111) is an escape meaning "continue to next field."
+    For long windows, section_len uses 5-bit fields (escape=31).
+    For short windows, section_len uses 3-bit fields (escape=7).
     """
-    max_section_len = 31  # 2^5 - 1 for long blocks
+    max_section_len = sect_escape
     i = 0
     while i < num_sfb:
         cb = int(codebook_indices[i])
@@ -337,9 +414,9 @@ def _write_section_data(
 
         remaining = run
         while remaining >= max_section_len:
-            writer.write_bits(max_section_len, 5)
+            writer.write_bits(max_section_len, sect_bits)
             remaining -= max_section_len
-        writer.write_bits(remaining, 5)
+        writer.write_bits(remaining, sect_bits)
 
         i += run
 
@@ -494,25 +571,12 @@ def build_adts_frame(
     scalefactors_r: NDArray[np.int32] | None = None,
     noise_scalefactors: NDArray[np.int32] | None = None,
     noise_scalefactors_r: NDArray[np.int32] | None = None,
+    window_sequence: int = 0,
 ) -> bytes:
     """Build a complete ADTS frame.
 
     Writes the ADTS header, channel element(s), end element, and byte-aligns.
     The header's frame_length field is patched after the payload is known.
-
-    Args:
-        config: Encoder configuration.
-        quantized: Left (or mono) quantized spectral data, shape ``(1024,)``.
-        global_gain: Left/mono global gain.
-        codebook_indices: Left/mono codebook indices per SFB.
-        sfb_offsets: SFB offsets.
-        huffman_encode_fn: Function to encode spectral data.
-        quantized_r: Right channel data (for stereo).
-        global_gain_r: Right channel gain (for stereo).
-        codebook_indices_r: Right channel codebooks (for stereo).
-
-    Returns:
-        Complete ADTS frame as bytes.
     """
     # Write channel element(s) + END to measure payload size
     payload_writer = BitWriter(4096)
@@ -543,6 +607,7 @@ def build_adts_frame(
             huffman_encode_fn,
             scalefactors=scalefactors,
             noise_scalefactors=noise_scalefactors,
+            window_sequence=window_sequence,
         )
 
     write_end_element(payload_writer)

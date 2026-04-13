@@ -139,6 +139,37 @@ def mdct(windowed_frames: torch.Tensor) -> torch.Tensor:
     return torch.matmul(windowed_frames, basis)
 
 
+def mdct_short(frames_2048: torch.Tensor) -> torch.Tensor:
+    """Compute 8 short-block MDCTs from a 2048-sample frame.
+
+    Extracts 8 overlapping 256-sample sub-windows from the center of the
+    2048-sample frame, applies a sine window, and computes 128-point MDCT
+    for each.
+
+    Args:
+        frames_2048: Input frames, shape ``(..., 2048)``.
+
+    Returns:
+        Short-block MDCT coefficients, shape ``(..., 8, 128)``.
+    """
+    device = frames_2048.device
+    # Sub-window positions within the 2048-sample frame.
+    # Per AAC spec: short windows are at offset 448 + w*128 for w=0..7
+    # Each sub-window is 256 samples with 128-sample overlap.
+    short_win = sine_window(256, device=device)
+    basis = _cached_basis(256, device)  # (256, 128)
+
+    results = []
+    for w in range(8):
+        start = 448 + w * 128
+        sub = frames_2048[..., start : start + 256]  # (..., 256)
+        windowed = sub * short_win
+        coeffs = torch.matmul(windowed, basis)  # (..., 128)
+        results.append(coeffs)
+
+    return torch.stack(results, dim=-2)  # (..., 8, 128)
+
+
 def imdct(mdct_coeffs: torch.Tensor) -> torch.Tensor:
     """Compute the inverse MDCT.
 

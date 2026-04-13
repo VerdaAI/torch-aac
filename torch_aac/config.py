@@ -24,6 +24,12 @@ AAC_WINDOW_LENGTH = 2048
 AAC_SHORT_WINDOW_LENGTH = 256
 """Window length for short blocks (8 short blocks per frame)."""
 
+AAC_SHORT_FRAME_LENGTH = 128
+"""Number of spectral lines per short block."""
+
+AAC_NUM_SHORT_WINDOWS = 8
+"""Number of short windows per EIGHT_SHORT_SEQUENCE frame."""
+
 MAX_SFB = 49
 """Maximum number of scalefactor bands across all sample rates."""
 

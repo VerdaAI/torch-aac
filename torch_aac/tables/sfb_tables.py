@@ -575,8 +575,27 @@ SFB_LONG: dict[int, list[int]] = {
 }
 
 
+# Scalefactor band offsets for SHORT windows (128 spectral lines per window).
+# Source: FFmpeg's ff_swb_offset_128[] / ISO 14496-3 Table 4.86.
+# Key: sample rate (Hz) → list of cumulative offsets ending at 128.
+SFB_SHORT_OFFSETS: dict[int, list[int]] = {
+    96000: [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 92, 128],
+    88200: [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 92, 128],
+    64000: [0, 4, 8, 12, 16, 20, 24, 32, 40, 48, 64, 92, 128],
+    48000: [0, 4, 8, 12, 16, 20, 28, 36, 44, 56, 68, 80, 96, 112, 128],
+    44100: [0, 4, 8, 12, 16, 20, 28, 36, 44, 56, 68, 80, 96, 112, 128],
+    32000: [0, 4, 8, 12, 16, 20, 28, 36, 44, 56, 68, 80, 96, 112, 128],
+    24000: [0, 4, 8, 12, 16, 20, 24, 28, 36, 44, 52, 64, 76, 92, 108, 128],
+    22050: [0, 4, 8, 12, 16, 20, 24, 28, 36, 44, 52, 64, 76, 92, 108, 128],
+    16000: [0, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 60, 72, 88, 108, 128],
+    12000: [0, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 60, 72, 88, 108, 128],
+    11025: [0, 4, 8, 12, 16, 20, 24, 28, 32, 40, 48, 60, 72, 88, 108, 128],
+    8000: [0, 4, 8, 12, 16, 20, 24, 28, 36, 44, 52, 60, 72, 88, 108, 128],
+}
+
+
 def get_sfb_offsets(sample_rate: int) -> list[int]:
-    """Return cumulative scalefactor band offsets for the given sample rate.
+    """Return cumulative scalefactor band offsets for long blocks.
 
     Args:
         sample_rate: Audio sample rate in Hz.
@@ -595,6 +614,23 @@ def get_sfb_offsets(sample_rate: int) -> list[int]:
     return offsets
 
 
+def get_sfb_offsets_short(sample_rate: int) -> list[int]:
+    """Return cumulative scalefactor band offsets for short blocks (128 lines).
+
+    Args:
+        sample_rate: Audio sample rate in Hz.
+
+    Returns:
+        List of offsets ending at 128.
+    """
+    return list(SFB_SHORT_OFFSETS[sample_rate])
+
+
 def get_num_sfb(sample_rate: int) -> int:
     """Return the number of scalefactor bands for long blocks at this sample rate."""
     return len(SFB_LONG[sample_rate])
+
+
+def get_num_sfb_short(sample_rate: int) -> int:
+    """Return the number of scalefactor bands for short blocks."""
+    return len(SFB_SHORT_OFFSETS[sample_rate]) - 1

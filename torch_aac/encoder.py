@@ -219,14 +219,52 @@ class AACEncoder:
 
         # === GPU stages ===
 
-        # 1. Apply window
+        # 1. Transient detection for block switching
+        from torch_aac.gpu.block_switch import (
+            EIGHT_SHORT_SEQUENCE,
+            ONLY_LONG_SEQUENCE,
+            detect_transients,
+            get_window_sequence,
+        )
+
+        # Detect per-frame (use channel 0 for detection)
+        is_transient = detect_transients(batch_frames[0])  # (B,)
+        # State machine: track window sequence across frames
+        if not hasattr(self, "_prev_win_seq"):
+            self._prev_win_seq = torch.full(
+                (B,), ONLY_LONG_SEQUENCE, device=self._device, dtype=torch.int64
+            )
+        # Expand prev state to match batch size
+        if self._prev_win_seq.shape[0] != B:
+            self._prev_win_seq = torch.full(
+                (B,), ONLY_LONG_SEQUENCE, device=self._device, dtype=torch.int64
+            )
+        win_seq = get_window_sequence(is_transient, self._prev_win_seq)
+        self._prev_win_seq = win_seq.clone()
+
+        # Separate long and short frames
+        is_short = win_seq == EIGHT_SHORT_SEQUENCE
+        short_indices = torch.where(is_short)[0]
+        torch.where(~is_short)[0]
+
+        # 2. Apply window + MDCT
         windowed = apply_window(batch_frames)  # (C, B, 2048)
-
-        # 2. MDCT
         mdct_coeffs = mdct(windowed)  # (C, B, 1024)
-
-        # Rearrange to (B, C, 1024) for quantizer
         mdct_coeffs = mdct_coeffs.permute(1, 0, 2)  # (B, C, 1024)
+
+        # For short blocks: also compute short MDCT
+        from torch_aac.gpu.filterbank import mdct_short
+
+        short_mdct = None
+        if len(short_indices) > 0:
+            # batch_frames is (C, B, 2048)
+            short_frames = batch_frames[:, short_indices, :]  # (C, n_short, 2048)
+            short_mdct_raw = mdct_short(short_frames)  # (C, n_short, 8, 128)
+            # Flatten 8x128 to 1024 for the existing pipeline
+            short_mdct = short_mdct_raw.reshape(C, len(short_indices), 1024)
+            short_mdct = short_mdct.permute(1, 0, 2)  # (n_short, C, 1024)
+            # Replace the long MDCT for short frames
+            mdct_coeffs[short_indices] = short_mdct
 
         # 3. Rate control: uniform global gain per frame.
         target = torch.full(
@@ -259,8 +297,10 @@ class AACEncoder:
             codebooks = torch.where(noise_mask, NOISE_BT, codebooks)
             noise_sf_np = noise_sf.cpu().numpy().astype(np.int32)
 
-        # === GPU Huffman + C bit-packing ===
-        if self._use_gpu_huffman:
+        # === GPU Huffman + C bit-packing (long blocks only) ===
+        # Short blocks fall through to the CPU path for now.
+        has_short = is_short.any().item()
+        if self._use_gpu_huffman and not has_short:
             return self._encode_batch_gpu_huffman(
                 quantized,
                 codebooks,
@@ -270,27 +310,37 @@ class AACEncoder:
                 noise_sf_np=noise_sf_np,
             )
 
-        # === CPU Huffman path ===
+        # === CPU Huffman path (handles both long and short blocks) ===
         quantized_np = quantized.cpu().numpy().astype(np.int32)
         codebooks_np = codebooks.cpu().numpy().astype(np.int32)
         gains_np = global_gains.cpu().numpy().astype(np.int32)
         sf_np = scalefactors.cpu().numpy().astype(np.int32)
+        win_seq_np = win_seq.cpu().numpy().astype(np.int32)
+
+        # For short blocks: use short SFB offsets
+        from torch_aac.tables.sfb_tables import get_sfb_offsets_short
+
+        sfb_short = get_sfb_offsets_short(self.config.sample_rate)
 
         adts_frames: list[bytes] = []
 
         for i in range(B):
             nsf = noise_sf_np[i, 0] if noise_sf_np is not None else None
             nsf_r = noise_sf_np[i, 1] if noise_sf_np is not None and C == 2 else None
+            ws = int(win_seq_np[i])
+            # Pick SFB offsets based on block type
+            frame_sfb = sfb_short if ws == EIGHT_SHORT_SEQUENCE else self._sfb_offsets
             if C == 1:
                 frame_bytes = build_adts_frame(
                     config=self.config,
                     quantized=quantized_np[i, 0],
                     global_gain=int(gains_np[i]),
                     codebook_indices=codebooks_np[i, 0],
-                    sfb_offsets=self._sfb_offsets,
+                    sfb_offsets=frame_sfb,
                     huffman_encode_fn=encode_spectral_band,
                     scalefactors=sf_np[i, 0],
                     noise_scalefactors=nsf,
+                    window_sequence=ws,
                 )
             else:
                 frame_bytes = build_adts_frame(
