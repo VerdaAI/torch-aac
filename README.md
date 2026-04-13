@@ -1,5 +1,10 @@
 # torch-aac
 
+[![CI](https://github.com/VerdaAI/torch-aac/actions/workflows/ci.yml/badge.svg)](https://github.com/VerdaAI/torch-aac/actions/workflows/ci.yml)
+[![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
+[![License: ELv2](https://img.shields.io/badge/license-ELv2-green.svg)](LICENSE)
+[![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg)](https://pytorch.org)
+
 **The first open-source GPU-accelerated, differentiable AAC-LC encoder.**
 
 Built for two use cases: (1) training neural audio models that are robust to AAC compression, and (2) fast GPU-accelerated audio encoding.
