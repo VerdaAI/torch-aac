@@ -72,7 +72,8 @@ class AACEncoder:
         if batch_size == 0:
             if self._device.type == "cuda":
                 props = torch.cuda.get_device_properties(self._device)
-                vram_gb = props.total_mem / (1024**3)
+                total_bytes = getattr(props, "total_memory", None) or props.total_mem
+                vram_gb = total_bytes / (1024**3)
                 self._batch_size = 4096 if vram_gb < 20 else 8192
             elif self._device.type == "mps":
                 # Apple Silicon unified memory. No cheap query for total

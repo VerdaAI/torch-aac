@@ -44,7 +44,9 @@ def device_check():
 def correctness_test(sr=48000):
     print("\n--- Correctness ---")
     signals = {
-        "sine_1khz": (0.5 * np.sin(2 * np.pi * 1000 * np.arange(2 * sr) / sr)).astype(np.float32),
+        "sine_1khz": (0.5 * np.sin(2 * np.pi * 1000 * np.arange(2 * sr) / sr)).astype(
+            np.float32
+        ),
         "noise": (0.3 * np.random.RandomState(42).randn(2 * sr)).astype(np.float32),
     }
     failures = []
@@ -55,19 +57,8 @@ def correctness_test(sr=48000):
             p = f.name
         r = subprocess.run(
             [
-                "ffmpeg",
-                "-y",
-                "-v",
-                "error",
-                "-i",
-                p,
-                "-f",
-                "f32le",
-                "-ar",
-                str(sr),
-                "-ac",
-                "1",
-                "pipe:1",
+                "ffmpeg", "-y", "-v", "error", "-i", p,
+                "-f", "f32le", "-ar", str(sr), "-ac", "1", "pipe:1",
             ],
             capture_output=True,
         )
@@ -154,56 +145,22 @@ def ffmpeg_comparison(sr=48000):
         for _ in range(2):
             subprocess.run(
                 [
-                    "ffmpeg",
-                    "-y",
-                    "-v",
-                    "error",
-                    "-f",
-                    "f32le",
-                    "-ar",
-                    str(sr),
-                    "-ac",
-                    "1",
-                    "-i",
-                    "pipe:0",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "128k",
-                    "-f",
-                    "adts",
-                    "pipe:1",
+                    "ffmpeg", "-y", "-v", "error",
+                    "-f", "f32le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
+                    "-c:a", "aac", "-b:a", "128k", "-f", "adts", "pipe:1",
                 ],
-                input=raw_bytes,
-                capture_output=True,
+                input=raw_bytes, capture_output=True,
             )
         ffmpeg_times = []
         for _ in range(5):
             t0 = time.perf_counter()
             subprocess.run(
                 [
-                    "ffmpeg",
-                    "-y",
-                    "-v",
-                    "error",
-                    "-f",
-                    "f32le",
-                    "-ar",
-                    str(sr),
-                    "-ac",
-                    "1",
-                    "-i",
-                    "pipe:0",
-                    "-c:a",
-                    "aac",
-                    "-b:a",
-                    "128k",
-                    "-f",
-                    "adts",
-                    "pipe:1",
+                    "ffmpeg", "-y", "-v", "error",
+                    "-f", "f32le", "-ar", str(sr), "-ac", "1", "-i", "pipe:0",
+                    "-c:a", "aac", "-b:a", "128k", "-f", "adts", "pipe:1",
                 ],
-                input=raw_bytes,
-                capture_output=True,
+                input=raw_bytes, capture_output=True,
             )
             ffmpeg_times.append(time.perf_counter() - t0)
         ffmpeg_best = min(ffmpeg_times)
