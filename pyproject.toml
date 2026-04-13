@@ -44,10 +44,32 @@ dev = [
 torch-aac = "torch_aac.__main__:main"
 
 [project.urls]
-Homepage = "https://github.com/verda-ai/torch-aac"
-Documentation = "https://github.com/verda-ai/torch-aac/tree/main/docs"
-Repository = "https://github.com/verda-ai/torch-aac"
-Issues = "https://github.com/verda-ai/torch-aac/issues"
+Homepage = "https://github.com/VerdaAI/torch-aac"
+Documentation = "https://github.com/VerdaAI/torch-aac/tree/main/docs"
+Repository = "https://github.com/VerdaAI/torch-aac"
+Issues = "https://github.com/VerdaAI/torch-aac/issues"
+Changelog = "https://github.com/VerdaAI/torch-aac/blob/main/CHANGELOG.md"
+
+[tool.hatch.build.targets.sdist]
+include = [
+    "torch_aac/",
+    "tests/",
+    "benchmark/",
+    "examples/",
+    "docs/",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md",
+    "CONTRIBUTING.md",
+    "pyproject.toml",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["torch_aac"]
+
+# Include the C source file in the wheel so it can JIT-compile on install
+[tool.hatch.build.targets.wheel.force-include]
+"torch_aac/cpu/_bitwriter.c" = "torch_aac/cpu/_bitwriter.c"
 
 [tool.ruff]
 target-version = "py310"
