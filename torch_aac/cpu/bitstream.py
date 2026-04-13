@@ -178,9 +178,9 @@ def write_single_channel_element(
     sfb_offsets: list[int],
     huffman_encode_fn: object,
     scalefactors: NDArray[np.int32] | None = None,
+    noise_scalefactors: NDArray[np.int32] | None = None,
 ) -> None:
     """Write a single_channel_element (SCE) to the bitstream."""
-    # id_syn_ele: ID_SCE = 0 (3 bits)
     writer.write_bits(0b000, 3)
     writer.write_bits(0, 4)
     _write_ics(
@@ -191,6 +191,7 @@ def write_single_channel_element(
         sfb_offsets,
         huffman_encode_fn,
         scalefactors,
+        noise_scalefactors,
     )
 
 
@@ -240,13 +241,11 @@ def _write_ics(
     sfb_offsets: list[int],
     huffman_encode_fn: object,
     scalefactors: NDArray[np.int32] | None = None,
+    noise_scalefactors: NDArray[np.int32] | None = None,
 ) -> None:
     """Write an individual_channel_stream (ICS)."""
     num_sfb_total = len(sfb_offsets) - 1
 
-    # Determine effective max_sfb: highest band with SIGNIFICANT content.
-    # Cap at 40 bands to avoid high-frequency bands where small quantization
-    # residuals produce unreliable Huffman codes. FFmpeg typically uses 22-34.
     MAX_SFB_LIMIT = 49
     max_sfb = 0
     for i in range(min(num_sfb_total, MAX_SFB_LIMIT)):
@@ -261,15 +260,10 @@ def _write_ics(
     writer.write_bits(0, 1)  # ics_reserved_bit
     writer.write_bits(0, 2)  # window_sequence: ONLY_LONG_SEQUENCE
     writer.write_bits(0, 1)  # window_shape: 0=sine, 1=KBD
-
-    writer.write_bits(max_sfb, 6)  # max_sfb (only bands with content)
+    writer.write_bits(max_sfb, 6)  # max_sfb
     writer.write_bits(0, 1)  # predictor_data_present: 0
 
-    if max_sfb == 0:
-        # No spectral content: just write trailer bits
-        pass
-    else:
-        # Use only the first max_sfb bands for section/sf/spectral data
+    if max_sfb > 0:
         active_codebooks = codebook_indices[:max_sfb]
 
         # --- section_data ---
@@ -277,17 +271,18 @@ def _write_ics(
 
         # --- scalefactor_data ---
         active_sf = scalefactors[:max_sfb] if scalefactors is not None else None
-        _write_scalefactor_data(writer, max_sfb, active_codebooks, global_gain, active_sf)
+        active_nsf = noise_scalefactors[:max_sfb] if noise_scalefactors is not None else None
+        _write_scalefactor_data(
+            writer, max_sfb, active_codebooks, global_gain, active_sf, active_nsf
+        )
 
-    # --- pulse, TNS, gain control flags (BEFORE spectral data!) ---
-    # Per ISO 14496-3 and FFmpeg's aacdec.c, these flags come after
-    # scalefactor_data but BEFORE spectral_data.
+    # --- pulse, TNS, gain control flags ---
     writer.write_bits(0, 1)  # pulse_data_present: 0
     writer.write_bits(0, 1)  # tns_data_present: 0
     writer.write_bits(0, 1)  # gain_control_data_present: 0
 
     if max_sfb > 0:
-        # --- spectral_data (AFTER pulse/tns/gain flags) ---
+        # --- spectral_data ---
         _write_spectral_data(writer, quantized, active_codebooks, sfb_offsets, huffman_encode_fn)
 
 
@@ -355,25 +350,54 @@ def _write_scalefactor_data(
     codebook_indices: NDArray[np.int32],
     global_gain: int = 0,
     scalefactors: NDArray[np.int32] | None = None,
+    noise_scalefactors: NDArray[np.int32] | None = None,
 ) -> None:
     """Write scalefactor data using Huffman-encoded deltas.
 
-    Scalefactors are delta-encoded: the first is relative to global_gain,
-    subsequent ones are relative to the previous. Only bands with non-zero
-    codebooks get scalefactor entries.
+    Spectral bands and noise (PNS) bands use independent delta chains.
+    The first noise band writes 9 raw bits; subsequent noise bands use
+    VLC deltas from the scalefactor Huffman table.
     """
+    from torch_aac.config import NOISE_BT, NOISE_OFFSET, NOISE_PRE, NOISE_PRE_BITS
     from torch_aac.cpu.scalefactor import encode_scalefactor_delta
 
     prev_sf = global_gain
+    prev_noise_sf = global_gain - NOISE_OFFSET
+    is_first_noise = True
+
     for i in range(num_sfb):
-        if int(codebook_indices[i]) == 0:
+        cb = int(codebook_indices[i])
+        if cb == 0:
             continue
-        sf = int(scalefactors[i]) if scalefactors is not None else global_gain
-        delta = sf - prev_sf
-        # Clamp delta to valid range [-60, 60]
-        delta = max(-60, min(60, delta))
-        encode_scalefactor_delta(writer, delta)
-        prev_sf = prev_sf + delta  # use clamped delta for tracking
+        if cb == NOISE_BT:
+            # PNS band: write noise energy scalefactor.
+            # noise_scalefactors[i] is the TARGET offset[1] value — the
+            # index into pow2sf_tab (via sfo + 200) that gives the right
+            # noise energy: sf = 2^(target_sfo/4), sf² = band_energy.
+            target_sfo = int(noise_scalefactors[i]) if noise_scalefactors is not None else 0
+            if is_first_noise:
+                # First noise band: 9 raw bits.
+                # Decoder: offset[1] = initial + raw - NOISE_PRE
+                # where initial = global_gain - NOISE_OFFSET.
+                # We want offset[1] = target_sfo, so:
+                # raw = target_sfo - initial + NOISE_PRE
+                initial = global_gain - NOISE_OFFSET
+                raw = target_sfo - initial + NOISE_PRE
+                writer.write_bits(max(0, min(511, raw)), NOISE_PRE_BITS)
+                prev_noise_sf = target_sfo
+                is_first_noise = False
+            else:
+                delta = target_sfo - prev_noise_sf
+                delta = max(-60, min(60, delta))
+                encode_scalefactor_delta(writer, delta)
+                prev_noise_sf = prev_noise_sf + delta
+        else:
+            # Normal spectral band
+            sf = int(scalefactors[i]) if scalefactors is not None else global_gain
+            delta = sf - prev_sf
+            delta = max(-60, min(60, delta))
+            encode_scalefactor_delta(writer, delta)
+            prev_sf = prev_sf + delta
 
 
 def _write_spectral_data(
@@ -397,10 +421,12 @@ def _write_spectral_data(
     """
     num_sfb = len(codebook_indices)
 
+    from torch_aac.config import NOISE_BT
+
     for i in range(num_sfb):
         cb = int(codebook_indices[i])
-        if cb == 0:
-            # Zero section — no spectral data
+        if cb == 0 or cb == NOISE_BT:
+            # Zero section or PNS — no spectral data
             continue
 
         start = sfb_offsets[i]
@@ -466,6 +492,8 @@ def build_adts_frame(
     codebook_indices_r: NDArray[np.int32] | None = None,
     scalefactors: NDArray[np.int32] | None = None,
     scalefactors_r: NDArray[np.int32] | None = None,
+    noise_scalefactors: NDArray[np.int32] | None = None,
+    noise_scalefactors_r: NDArray[np.int32] | None = None,
 ) -> bytes:
     """Build a complete ADTS frame.
 
@@ -514,6 +542,7 @@ def build_adts_frame(
             sfb_offsets,
             huffman_encode_fn,
             scalefactors=scalefactors,
+            noise_scalefactors=noise_scalefactors,
         )
 
     write_end_element(payload_writer)

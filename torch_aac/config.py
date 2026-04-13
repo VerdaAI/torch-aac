@@ -33,6 +33,19 @@ ADTS_HEADER_SIZE = 7
 # MPEG-4 Audio Object Types
 AOT_AAC_LC = 2
 
+# Perceptual Noise Substitution (PNS)
+NOISE_BT = 13
+"""Band type for PNS: decoder generates white noise at a specified energy."""
+
+NOISE_OFFSET = 90
+"""Decoder subtracts this from global_gain for the initial noise sf offset."""
+
+NOISE_PRE = 256
+"""Added to the first noise band's offset before writing as 9 raw bits."""
+
+NOISE_PRE_BITS = 9
+"""Bit width of the first noise band's absolute offset field."""
+
 # ADTS sampling frequency index mapping
 SAMPLE_RATE_INDEX: dict[int, int] = {
     96000: 0,

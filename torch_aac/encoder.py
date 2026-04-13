@@ -84,12 +84,12 @@ class AACEncoder:
         else:
             self._batch_size = batch_size
 
-        # GPU Huffman path exists (gpu/huffman_encode.py) but is currently
-        # slower than the CPU+C path for single-stream encoding due to Python
-        # per-group overhead. It would win for multi-stream batching (100+
-        # streams simultaneously) where the GPU gather amortizes launch cost.
-        # For now, default to the fast CPU+C path.
         self._use_gpu_huffman = False
+        # PNS infrastructure is complete (detection + bitstream protocol) but
+        # the noise energy calibration (sfo → decoded amplitude) needs tuning.
+        # Disable by default until the +C correction factor is empirically
+        # determined. Enable with encoder._enable_pns = True for testing.
+        self._enable_pns = False
 
     def encode(self, pcm: np.ndarray | torch.Tensor) -> bytes:
         """Encode PCM audio to AAC-LC ADTS bytes.
@@ -215,13 +215,26 @@ class AACEncoder:
         codebooks = select_codebooks(q_flat, self._sfb_offsets)
         codebooks = codebooks.reshape(B, C, -1)
 
+        # 7. PNS: detect noise-like bands and compute noise scalefactors
+        noise_sf_np = None
+        if self._enable_pns:
+            from torch_aac.config import NOISE_BT
+            from torch_aac.gpu.pns import compute_noise_energy_sf, detect_noise_bands
+
+            noise_mask = detect_noise_bands(mdct_coeffs, quantized, codebooks, self._sfb_offsets)
+            noise_sf = compute_noise_energy_sf(
+                mdct_coeffs, self._sfb_offsets, noise_mask, global_gains
+            )
+            codebooks = torch.where(noise_mask, NOISE_BT, codebooks)
+            noise_sf_np = noise_sf.cpu().numpy().astype(np.int32)
+
         # === Mono fast path: GPU Huffman + C bit-packing ===
         if C == 1 and self._use_gpu_huffman:
             return self._encode_batch_gpu_huffman(
                 quantized, codebooks, scalefactors, global_gains, B
             )
 
-        # === Fallback: CPU Huffman (stereo, or when C extension unavailable) ===
+        # === CPU Huffman path ===
         quantized_np = quantized.cpu().numpy().astype(np.int32)
         codebooks_np = codebooks.cpu().numpy().astype(np.int32)
         gains_np = global_gains.cpu().numpy().astype(np.int32)
@@ -230,6 +243,8 @@ class AACEncoder:
         adts_frames: list[bytes] = []
 
         for i in range(B):
+            nsf = noise_sf_np[i, 0] if noise_sf_np is not None else None
+            nsf_r = noise_sf_np[i, 1] if noise_sf_np is not None and C == 2 else None
             if C == 1:
                 frame_bytes = build_adts_frame(
                     config=self.config,
@@ -239,6 +254,7 @@ class AACEncoder:
                     sfb_offsets=self._sfb_offsets,
                     huffman_encode_fn=encode_spectral_band,
                     scalefactors=sf_np[i, 0],
+                    noise_scalefactors=nsf,
                 )
             else:
                 frame_bytes = build_adts_frame(
@@ -253,6 +269,8 @@ class AACEncoder:
                     codebook_indices_r=codebooks_np[i, 1],
                     scalefactors=sf_np[i, 0],
                     scalefactors_r=sf_np[i, 1],
+                    noise_scalefactors=nsf,
+                    noise_scalefactors_r=nsf_r,
                 )
             adts_frames.append(frame_bytes)
 
