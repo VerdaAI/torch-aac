@@ -58,7 +58,7 @@ torch_aac/
 └── config.py     # Configuration
 ```
 
-See `docs/architecture.md` for a detailed technical guide.
+See [`docs/technical.md`](docs/technical.md) for the full technical deep dive — optimization stories, bugs we found, and architectural decisions.
 
 ## Pull Requests
 
