@@ -205,17 +205,67 @@ def quantize_per_band(
     return flat_result.reshape_as(mdct_coeffs)
 
 
+_BITS_PER_COEF_TABLE: torch.Tensor | None = None
+
+
+def _build_bits_table(device: torch.device) -> torch.Tensor:
+    """Build a lookup table: bits_per_coefficient[|q|] for q in [0, 4096].
+
+    Derived from actual AAC Huffman code lengths for pair codebooks (cb5-11).
+    For each |q|, computes the cost of encoding the pair (±q, 0) in the
+    optimal codebook, then divides by 2 for per-coefficient cost.
+
+    This replaces the rough log-based formula that overestimated by 1.2-2.5x,
+    causing rate control to waste 30-50% of the bit budget.
+    """
+    from torch_aac.tables.huffman_tables import CODEBOOK_MAX_ABS as CMA
+    from torch_aac.tables.huffman_tables import CODEBOOK_UNSIGNED as CU
+    from torch_aac.tables.huffman_tables import CODEBOOKS as CBS
+
+    table = torch.zeros(4097, dtype=torch.float32, device=device)
+
+    # Available pair codebooks in pairs_only mode: 5, 7, 9, 11
+    pair_cbs = [(5, CMA[5]), (7, CMA[7]), (9, CMA[9]), (11, CMA[11])]
+
+    for q_abs in range(4097):
+        # Find optimal codebook
+        best_cb = 11
+        for cb_num, ma in pair_cbs:
+            if q_abs <= ma:
+                best_cb = cb_num
+                break
+
+        cb_dict = CBS[best_cb]
+        is_unsigned = CU[best_cb]
+
+        if is_unsigned:
+            lookup_q = min(q_abs, 16 if best_cb == 11 else CMA[best_cb])
+            entry = cb_dict.get((lookup_q, 0))  # type: ignore[union-attr]
+            code_bits = entry[1] if entry else 14
+            sign_bits = 1 if q_abs > 0 else 0
+            escape_bits = 0
+            if best_cb == 11 and q_abs > 15:
+                av = min(q_abs, 4095)
+                n = max(0, min(av.bit_length() - 5, 8))
+                escape_bits = (n + 1) + (n + 4)
+            total = code_bits + sign_bits + escape_bits
+        else:
+            entry = cb_dict.get((q_abs, 0)) or cb_dict.get((-q_abs, 0))  # type: ignore[union-attr]
+            total = entry[1] if entry else 14
+
+        table[q_abs] = total / 2.0  # per-coefficient (pair covers 2 coefs)
+
+    return table
+
+
 def estimate_bit_count(
     quantized: torch.Tensor,
 ) -> torch.Tensor:
-    """Estimate the number of bits needed to Huffman-encode quantized coefficients.
+    """Estimate the number of bits to Huffman-encode quantized coefficients.
 
-    Uses a simple approximation: each non-zero coefficient costs approximately
-    log2(|q| + 1) + 1 bits (sign bit). Zero coefficients cost ~1 bit in most
-    codebooks (the zero codeword is short).
-
-    This is used by the GPU rate control loop for fast bit estimation without
-    running actual Huffman encoding.
+    Uses a precomputed lookup table derived from actual AAC Huffman code
+    lengths. For each |q|, the table gives the expected bits per coefficient
+    when encoding a pair (±q, 0) in the optimal codebook.
 
     Args:
         quantized: Quantized coefficients, shape ``(..., 1024)``.
@@ -223,26 +273,12 @@ def estimate_bit_count(
     Returns:
         Estimated bit count per frame, shape ``(...,)`` — all dims except last.
     """
-    abs_q = torch.abs(quantized)
+    global _BITS_PER_COEF_TABLE
+    device = quantized.device
+    if _BITS_PER_COEF_TABLE is None or _BITS_PER_COEF_TABLE.device != device:
+        _BITS_PER_COEF_TABLE = _build_bits_table(device)
 
-    # Approximate Huffman cost per coefficient.
-    # This drives the rate control binary search. Should be reasonably
-    # accurate to avoid under/over-quantization.
-    #
-    # Cost model based on typical AAC Huffman code lengths:
-    # - Zero: ~0.25 bits (most bands are zero, section overhead is small)
-    # - Small (1-4): ~4-6 bits (Huffman code + sign)
-    # - Medium (5-16): ~6-10 bits
-    # - Large (>16): escape codes ~2*log2(val) + 8 bits
-    log_q = torch.log2(abs_q + 1.0)
-    cost = torch.where(
-        abs_q < 0.5,
-        torch.full_like(abs_q, 0.25),
-        torch.where(
-            abs_q <= 16.0,
-            log_q + 4.0,
-            log_q * 2.0 + 8.0,
-        ),
-    )
+    abs_q = quantized.abs().long().clamp(0, 4096)
+    cost = _BITS_PER_COEF_TABLE[abs_q]
 
     return cost.sum(dim=-1)

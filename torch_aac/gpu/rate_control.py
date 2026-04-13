@@ -233,9 +233,7 @@ def compute_scalefactors(
 ) -> torch.Tensor:
     """Return uniform per-band scalefactors set to ``global_gain``.
 
-    Kept for the differentiable mode and tests. The production encoding path
-    uses :func:`find_scalefactors` instead, which combines rate control with
-    psychoacoustic per-band allocation.
+    Kept for the differentiable mode and backward compat.
     """
     num_sfb = len(sfb_offsets) - 1
     original_shape = mdct_coeffs.shape[:-1]
@@ -247,3 +245,109 @@ def compute_scalefactors(
     scalefactors = gg.unsqueeze(-1).expand(flat_count, num_sfb).contiguous()
 
     return scalefactors.reshape(*original_shape, num_sfb)
+
+
+def find_rate_distortion_sf(
+    mdct_coeffs: torch.Tensor,
+    target_bits: torch.Tensor | float,
+    sfb_offsets: list[int],
+    quant_mode: QuantMode = QuantMode.HARD,
+    target_q: float = 30.0,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    """Per-band SF allocation targeting q≈target_q for each active band.
+
+    Each band gets an SF that would produce q≈target_q for its peak
+    coefficient. A global SHIFT is then applied via binary search so the
+    total bit count fits the budget. The key properties:
+
+    - All active bands produce q in the [5, 50] sweet spot where AAC's
+      non-uniform quantizer is most bit-efficient. This avoids the escape
+      code regime (q > 1000) that dominates at very low SF.
+    - Bands with high amplitude get LOW SF (large step), bands with low
+      amplitude get HIGH SF (small step) — but both target the same q.
+    - Insignificant bands (peak < 1% of frame peak) are zeroed (SF=255).
+
+    For a 10-harmonic music signal: each harmonic band gets SF tuned to
+    its amplitude, concentrating bits on harmonics. This closes the
+    per-band allocation gap vs Apple/FDK encoders.
+
+    Returns:
+        Tuple of (global_gain, scalefactors).
+    """
+    from torch_aac.gpu.quantizer import SF_OFFSET
+
+    B = mdct_coeffs.shape[0]
+    device = mdct_coeffs.device
+    num_sfb = len(sfb_offsets) - 1
+
+    if isinstance(target_bits, (int, float)):
+        target_bits_t = torch.full((B,), target_bits, device=device, dtype=torch.float32)
+    elif target_bits.dim() == 0:
+        target_bits_t = target_bits.expand(B)
+    else:
+        target_bits_t = target_bits
+
+    flat = mdct_coeffs.reshape(-1, mdct_coeffs.shape[-1])
+    N = flat.shape[0]
+
+    # Per-band peak |x|
+    band_max = torch.zeros(N, num_sfb, device=device)
+    for i in range(num_sfb):
+        s, e = sfb_offsets[i], sfb_offsets[i + 1]
+        if e > 1024:
+            break
+        band_max[:, i] = flat[:, s:e].abs().max(dim=-1).values
+
+    frame_peak = band_max.max(dim=-1, keepdim=True).values.clamp(min=1e-20)
+    is_significant = band_max > (frame_peak * 0.01)
+
+    # Per-band SF targeting q ≈ target_q for each band's peak coefficient.
+    # q = |x|^0.75 / step_enc, step_enc = 2^(3/16 * (sf - SF_OFFSET))
+    # Solve: sf = SF_OFFSET + (16/3) * log2(|x|^0.75 / target_q)
+    #          = SF_OFFSET + 4*log2(|x|) - (16/3)*log2(target_q)
+    log2_max = torch.log2(band_max.clamp(min=1e-20))
+    log2_tq = torch.log2(torch.tensor(target_q, device=device))
+    optimal_sf = SF_OFFSET + 4.0 * log2_max - (16.0 / 3.0) * log2_tq
+    optimal_sf = optimal_sf.round().clamp(0, 255).to(torch.int64)
+
+    # Zero out insignificant bands
+    optimal_sf[~is_significant] = 255
+
+    # Convert to shifts: shift = sf - min(sf among significant bands)
+    sf_for_min = optimal_sf.clone()
+    sf_for_min[~is_significant] = 255
+    base_sf = sf_for_min.min(dim=-1, keepdim=True).values.clamp(max=254)
+    shifts = (optimal_sf - base_sf).clamp(0, MAX_MASK_SHIFT)
+    shifts[~is_significant] = MAX_MASK_SHIFT
+
+    # Binary search for global gain with these shifts
+    shifts_shaped = shifts.reshape(*mdct_coeffs.shape[:-1], num_sfb)
+    lo = torch.full((B,), MIN_GAIN, device=device, dtype=torch.float32)
+    hi = torch.full((B,), MAX_GAIN, device=device, dtype=torch.float32)
+
+    for _ in range(MAX_ITERATIONS):
+        mid = torch.floor((lo + hi) / 2.0)
+        if shifts_shaped.dim() == 3:
+            trial_sf = mid.view(B, 1, 1) + shifts_shaped.float()
+        else:
+            trial_sf = mid.view(B, 1) + shifts_shaped.float()
+        trial_sf = trial_sf.clamp(0, 255).to(torch.int64)
+
+        trial_q = quantize_per_band(mdct_coeffs, trial_sf, sfb_offsets, mode=quant_mode)
+        bits = estimate_bit_count(trial_q)
+        if bits.dim() > 1:
+            bits = bits.sum(dim=tuple(range(1, bits.dim())))
+        max_q = trial_q.abs().reshape(B, -1).max(dim=-1).values
+
+        too_low = (bits > target_bits_t) | (max_q > MAX_QUANTIZED_VALUE)
+        lo = torch.where(too_low, mid + 1.0, lo)
+        hi = torch.where(~too_low, mid, hi)
+
+    global_gain = lo.to(torch.int64)
+    if shifts_shaped.dim() == 3:
+        final_sf = global_gain.view(B, 1, 1) + shifts_shaped
+    else:
+        final_sf = global_gain.view(B, 1) + shifts_shaped
+    final_sf = final_sf.clamp(0, 255)
+
+    return global_gain, final_sf

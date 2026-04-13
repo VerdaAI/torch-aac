@@ -179,6 +179,34 @@ class AACEncoder:
 
         raise ValueError(f"Expected 1-D or 2-D PCM tensor, got {pcm.dim()}-D")
 
+    @staticmethod
+    def _zero_insignificant_bands(
+        mdct_coeffs: torch.Tensor, sfb_offsets: list[int], threshold: float = 0.01
+    ) -> torch.Tensor:
+        """Zero out MDCT bands with peak amplitude < threshold of the frame peak.
+
+        This concentrates the bit budget on active bands. For a 10-harmonic
+        signal with 49 bands, only ~10 bands are significant — the other 39
+        are zeroed, freeing ~4x more bits per active band.
+        """
+        flat = mdct_coeffs.reshape(-1, mdct_coeffs.shape[-1])
+        N = flat.shape[0]
+        num_sfb = len(sfb_offsets) - 1
+
+        # Frame-level peak amplitude
+        frame_peak = flat.abs().max(dim=-1, keepdim=True).values.clamp(min=1e-20)
+
+        result = flat.clone()
+        for i in range(num_sfb):
+            s, e = sfb_offsets[i], sfb_offsets[i + 1]
+            if e > 1024:
+                break
+            band_peak = flat[:, s:e].abs().max(dim=-1).values  # (N,)
+            insignificant = band_peak < (frame_peak.squeeze(-1) * threshold)
+            result[:, s:e] = result[:, s:e] * (~insignificant).unsqueeze(-1).float()
+
+        return result.reshape_as(mdct_coeffs)
+
     def _encode_batch(self, batch_frames: torch.Tensor) -> list[bytes]:
         """Encode a batch of frames through the GPU+CPU pipeline.
 
@@ -201,9 +229,7 @@ class AACEncoder:
         # Rearrange to (B, C, 1024) for quantizer
         mdct_coeffs = mdct_coeffs.permute(1, 0, 2)  # (B, C, 1024)
 
-        # 3. Rate control: find global gain per frame (uniform sf across bands).
-        # The psychoacoustic-driven per-band variant in find_scalefactors
-        # is experimental and not yet on the critical path — see A23 notes.
+        # 3. Rate control: uniform global gain per frame.
         target = torch.full(
             (B,), self._target_bits / max(C, 1), device=self._device, dtype=torch.float32
         )
