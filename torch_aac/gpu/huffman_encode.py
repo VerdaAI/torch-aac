@@ -50,8 +50,9 @@ def _build_gpu_tables(device: torch.device) -> tuple[torch.Tensor, torch.Tensor]
 
     Codebook 0 is unused (zero-filled).
     """
-    all_codes = torch.zeros(12, _MAX_ENTRIES, dtype=torch.int64, device=device)
-    all_lengths = torch.zeros(12, _MAX_ENTRIES, dtype=torch.int64, device=device)
+    # Pad to 14 rows to safely handle NOISE_BT=13 indices (row 13 stays zero)
+    all_codes = torch.zeros(14, _MAX_ENTRIES, dtype=torch.int64, device=device)
+    all_lengths = torch.zeros(14, _MAX_ENTRIES, dtype=torch.int64, device=device)
 
     for cb in range(1, 12):
         codebook = CODEBOOKS[cb]
@@ -501,11 +502,13 @@ def encode_spectral_batched(
 
     group_band, group_start, G = _build_pair_group_map(tuple(sfb_offsets), device)
 
-    # Property tables on device
-    base_t = torch.tensor(_BASE, device=device, dtype=torch.long)
-    offset_t = torch.tensor(_OFFSET, device=device, dtype=torch.long)
-    maxabs_t = torch.tensor(CODEBOOK_MAX_ABS, device=device, dtype=torch.long)
-    unsigned_t = torch.tensor(CODEBOOK_UNSIGNED, device=device, dtype=torch.bool)
+    # Property tables on device — pad to 14 entries to handle NOISE_BT=13 safely
+    def _pad(lst, n):
+        return lst + [lst[0]] * (n - len(lst))
+    base_t = torch.tensor(_pad(_BASE, 14), device=device, dtype=torch.long)
+    offset_t = torch.tensor(_pad(_OFFSET, 14), device=device, dtype=torch.long)
+    maxabs_t = torch.tensor(_pad(CODEBOOK_MAX_ABS, 14), device=device, dtype=torch.long)
+    unsigned_t = torch.tensor(_pad(CODEBOOK_UNSIGNED, 14), device=device, dtype=torch.bool)
 
     all_codes_t, all_lengths_t = _build_gpu_tables(device)
 
@@ -514,7 +517,8 @@ def encode_spectral_batched(
     # --- Per-group codebook and active mask ---
     # group_cb: (N, G) — codebook for each group
     group_cb = codebooks[:, group_band]  # (N, G)
-    active = group_cb > 0  # (N, G) — skip cb=0 bands
+    # Active = non-zero AND non-PNS (cb=13 has no spectral data)
+    active = (group_cb > 0) & (group_cb <= 11)  # (N, G)
 
     # --- Gather coefficient pairs ---
     coef_a_idx = group_start.unsqueeze(0).expand(N, -1)  # (N, G)

@@ -233,10 +233,15 @@ class AACEncoder:
             codebooks = torch.where(noise_mask, NOISE_BT, codebooks)
             noise_sf_np = noise_sf.cpu().numpy().astype(np.int32)
 
-        # === Mono fast path: GPU Huffman + C bit-packing ===
-        if C == 1 and self._use_gpu_huffman:
+        # === GPU Huffman + C bit-packing ===
+        if self._use_gpu_huffman:
             return self._encode_batch_gpu_huffman(
-                quantized, codebooks, scalefactors, global_gains, B
+                quantized,
+                codebooks,
+                scalefactors,
+                global_gains,
+                B,
+                noise_sf_np=noise_sf_np,
             )
 
         # === CPU Huffman path ===
@@ -288,6 +293,7 @@ class AACEncoder:
         scalefactors: torch.Tensor,
         global_gains: torch.Tensor,
         B: int,
+        noise_sf_np: np.ndarray | None = None,
     ) -> list[bytes]:
         """Fast path: batch GPU Huffman lookup + C bit-packing.
 
@@ -377,17 +383,37 @@ class AACEncoder:
                         fl.append(5)
                         si += run
 
-                    # --- Scalefactor data (direct VLC code/length, no BitWriter) ---
+                    # --- Scalefactor data (direct VLC code/length) ---
                     prev_sf = gg
+                    prev_noise_sf = gg - 90  # NOISE_OFFSET
+                    is_first_noise = True
+                    nsf_arr = noise_sf_np[i, ch] if noise_sf_np is not None else None
                     for b in range(max_sfb):
-                        if cbs[b] == 0:
+                        cb_b = int(cbs[b])
+                        if cb_b == 0:
                             continue
-                        sf = int(sfs[b])
-                        delta = max(-60, min(60, sf - prev_sf))
-                        idx = delta + 60
-                        fc.append(sf_code_table[idx])
-                        fl.append(sf_bits_table[idx])
-                        prev_sf += delta
+                        if cb_b == 13 and nsf_arr is not None:
+                            # PNS noise band
+                            target_sfo = int(nsf_arr[b])
+                            if is_first_noise:
+                                raw = target_sfo - (gg - 90) + 256
+                                fc.append(max(0, min(511, raw)))
+                                fl.append(9)
+                                prev_noise_sf = target_sfo
+                                is_first_noise = False
+                            else:
+                                delta = max(-60, min(60, target_sfo - prev_noise_sf))
+                                idx = delta + 60
+                                fc.append(sf_code_table[idx])
+                                fl.append(sf_bits_table[idx])
+                                prev_noise_sf += delta
+                        else:
+                            sf = int(sfs[b])
+                            delta = max(-60, min(60, sf - prev_sf))
+                            idx = delta + 60
+                            fc.append(sf_code_table[idx])
+                            fl.append(sf_bits_table[idx])
+                            prev_sf += delta
 
                 # --- Pulse/TNS/gain flags ---
                 fc.append(0)

@@ -13,6 +13,12 @@ from __future__ import annotations
 
 import torch
 
+# Empirical correction added to sfo = 2*log2(E) for PNS noise energy.
+# Compensates for the MDCT normalization mismatch between our unnormalized
+# forward MDCT and FFmpeg's PNS noise generator. Set to 0 and sweep
+# until rms_ratio ≈ 1.0 on white noise to calibrate.
+PNS_ENERGY_CORRECTION: int = 0
+
 
 def detect_noise_bands(
     mdct_coeffs: torch.Tensor,
@@ -120,12 +126,11 @@ def compute_noise_energy_sf(
     # sf = 2^(sfo/4). We want sf² = band_energy, so:
     # 2^(sfo/2) = band_energy → sfo = 2*log2(band_energy)
     #
-    # Base formula: sfo = 2*log2(E) makes sf² = E (MDCT-domain energy).
     # Empirical correction +C accounts for the mismatch between our
     # unnormalized forward MDCT and FFmpeg's PNS noise reconstruction.
-    # Calibrated by sweeping C on white noise until rms_ratio ≈ 1.0.
-    _PNS_ENERGY_CORRECTION = 9  # ≈ log2(N/4) where N=2048 window length
-    sfo = 2.0 * torch.log2(band_energy.clamp(min=1e-20)) + _PNS_ENERGY_CORRECTION
+    # Set via pns.PNS_ENERGY_CORRECTION; calibrated by sweeping C on
+    # white noise until rms_ratio ≈ 1.0.
+    sfo = 2.0 * torch.log2(band_energy.clamp(min=1e-20)) + PNS_ENERGY_CORRECTION
 
     # Clamp to valid range (decoder clips to [-100, 155])
     sfo = sfo.clamp(-100, 155).round().to(torch.int64)
