@@ -156,10 +156,10 @@ def _encode_escape(writer: BitWriter, abs_val: int) -> None:
     n = max(0, min(abs_val.bit_length() - 5, MAX_ESCAPE_N))
     mantissa_bits = n + 4
     mantissa = abs_val - (1 << mantissa_bits)
-    # N ones
-    for _ in range(n):
-        writer.write_bits(1, 1)
-    # Terminating zero
-    writer.write_bits(0, 1)
-    # (N+4) bit mantissa
+    # Write "N ones + zero + mantissa" in as few write_bits calls as possible.
+    # Prefix = N ones followed by 1 zero = ((1 << n) - 1) << 1 in (n+1) bits.
+    if n > 0:
+        writer.write_bits(((1 << n) - 1) << 1, n + 1)  # N ones + zero
+    else:
+        writer.write_bits(0, 1)  # just the terminating zero
     writer.write_bits(mantissa, mantissa_bits)
