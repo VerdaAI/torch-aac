@@ -14,7 +14,7 @@ Built for two use cases: (1) training neural audio models that are robust to AAC
 
 ## Features
 
-- **Fast** — ~97x realtime on CPU, ~67x on Apple MPS. JIT-compiled C bit-packer, batch-vectorized GPU Huffman lookup.
+- **Fast** — 212x realtime on RTX 3090, ~97x on CPU, ~67x on Apple MPS. JIT-compiled C bit-packer, batch-vectorized GPU Huffman lookup.
 - **Differentiable** — Backpropagate through AAC encoding via straight-through estimator (STE) or noise injection. Train codec-robust models directly.
 - **Accurate** — Beats Apple AudioToolbox by 2-25 dB SNR on real audio (TTS speech, music, noise) at 128 kbps.
 - **Standard** — Produces valid AAC-LC ADTS bitstreams decodable by FFmpeg, VLC, browsers, and every major audio player.
@@ -114,13 +114,23 @@ The differentiable path produces **bit-identical output** to the encode path (ve
 
 ## Throughput
 
-| Configuration               | Realtime factor | Notes                              |
-|-----------------------------|----------------:|------------------------------------|
-| CPU (Apple M-series)        |           ~97x  | C BitWriter + batch GPU Huffman    |
-| MPS (Apple Silicon GPU)     |           ~67x  | GPU stages on Metal                |
-| Multi-stream (8 streams)    |           ~92x  | ThreadPool, aggregate              |
+| Device                      | 10s mono | 60s mono | Notes                              |
+|-----------------------------|--------:|---------:|------------------------------------|
+| **RTX 3090 (CUDA)**        |  184x   |   212x   | Batch GPU Huffman + C BitWriter    |
+| **RTX 3080 Ti (CUDA)**     |  185x   |   206x   | Same pipeline, less VRAM           |
+| CPU (Apple M-series)        |   97x   |    —     | C BitWriter + batch GPU Huffman    |
+| MPS (Apple Silicon GPU)     |   67x   |    —     | GPU stages on Metal                |
+| Batch 8×10s (RTX 3090)      |  203x   |    —     | Aggregate realtime                 |
 
-Measured on 10s mono audio at 128 kbps. See [docs/technical.md](docs/technical.md) for the optimization story.
+Peak VRAM: 570 MB for 60s encode. Full results: [benchmarks/results/](benchmarks/results/).
+
+**vs FFmpeg native AAC encoder** (CPU baseline):
+
+| Duration | RTX 3090 speedup | RTX 3080 Ti speedup |
+|----------|:----------------:|:-------------------:|
+| 1s       |       3.4x       |        3.2x         |
+| 10s      |       2.0x       |        1.8x         |
+| 60s      |       1.2x       |        1.1x         |
 
 ## CLI
 

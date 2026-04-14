@@ -1,0 +1,43 @@
+============================================================
+torch-aac CUDA Validation
+============================================================
+
+PyTorch: 2.10.0+cu126
+CUDA available: True
+GPU: NVIDIA GeForce RTX 3080 Ti
+VRAM: 11.6 GB
+torch-aac: 0.1.0
+
+--- Correctness ---
+  sine_1khz: 30640 bytes, peak ratio 1.0019 OK
+  noise: 46347 bytes, peak ratio 1.0361 OK
+
+--- Differentiable Mode (CUDA) ---
+  grad norm: 0.0289, NaN: False
+  OK
+
+--- Throughput (CUDA) ---
+    1s mono 128k:    10.2 ms =   97.8x realtime
+   10s mono 128k:    53.9 ms =  185.4x realtime
+   30s mono 128k:   150.0 ms =  200.1x realtime
+   60s mono 128k:   291.9 ms =  205.5x realtime
+
+--- CUDA vs CPU ---
+  cuda : 52.6 ms = 190.2x realtime
+  cpu  : 70.7 ms = 141.4x realtime
+
+--- torch-aac vs FFmpeg AAC ---
+    1s | ffmpeg    33.5 ms (  29.8x rt)  cuda    10.4 ms (  96.5x rt)  cpu    10.6 ms (  94.1x rt)  | cuda/ffmpeg 3.23x  cpu/ffmpeg 3.15x
+   10s | ffmpeg    93.3 ms ( 107.2x rt)  cuda    52.7 ms ( 189.6x rt)  cpu    69.0 ms ( 144.8x rt)  | cuda/ffmpeg 1.77x  cpu/ffmpeg 1.35x
+   30s | ffmpeg   182.8 ms ( 164.1x rt)  cuda   155.4 ms ( 193.0x rt)  cpu   254.2 ms ( 118.0x rt)  | cuda/ffmpeg 1.18x  cpu/ffmpeg 0.72x
+   60s | ffmpeg   333.4 ms ( 180.0x rt)  cuda   303.3 ms ( 197.8x rt)  cpu   443.8 ms ( 135.2x rt)  | cuda/ffmpeg 1.10x  cpu/ffmpeg 0.75x
+
+--- Batch Throughput (CUDA) ---
+  8x10s batch: 2000.2 ms = 40.0x aggregate realtime
+
+--- GPU Memory ---
+  Peak VRAM (60s encode): 570 MB
+
+============================================================
+CUDA Validation Complete
+============================================================

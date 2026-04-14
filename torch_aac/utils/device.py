@@ -54,7 +54,8 @@ def estimate_max_batch_size(
         return 256
 
     props = torch.cuda.get_device_properties(device)
-    available = props.total_mem - (reserve_mb * 1024 * 1024)
+    total_bytes = getattr(props, "total_memory", None) or props.total_mem
+    available = total_bytes - (reserve_mb * 1024 * 1024)
 
     # Memory per frame estimate:
     # input(W*4) + windowed(W*4) + fft_complex(W*8) + mdct(W/2*4) + quantized(W/2*4)
