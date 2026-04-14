@@ -54,10 +54,9 @@ jobs:
           restore-keys: pip-${{ matrix.python-version }}-
 
       - name: Install dependencies
-        run: pip install -e ".[dev]"
-
-      - name: Install FFmpeg
-        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+        run: |
+          pip install -e ".[dev]"
+          sudo apt-get update -qq && sudo apt-get install -y -qq ffmpeg
 
       - name: Run tests
         run: pytest -v --tb=short
@@ -70,29 +69,9 @@ jobs:
           print('C BitWriter: OK')
           "
 
-  encode-smoke:
-    name: Encode Smoke Test
-    runs-on: ubuntu-latest
-    needs: test
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-
-      - name: Cache pip
-        uses: actions/cache@v4
-        with:
-          path: ~/.cache/pip
-          key: pip-3.12-${{ hashFiles('pyproject.toml') }}
-
-      - name: Install
-        run: |
-          pip install -e ".[dev]"
-          sudo apt-get update && sudo apt-get install -y ffmpeg
-
-      - name: Encode → FFmpeg decode roundtrip
+      # Smoke tests run in the same job to avoid re-installing PyTorch
+      - name: Smoke — encode roundtrip
+        if: matrix.python-version == '3.12'
         run: |
           python -c "
           import numpy as np, subprocess, tempfile
@@ -105,22 +84,24 @@ jobs:
           print(f'Encoded: {len(aac)} bytes')
 
           with tempfile.NamedTemporaryFile(suffix='.aac', delete=False) as f:
-              f.write(aac); p = f.name
+              f.write(aac)
+              p = f.name
           r = subprocess.run(
               ['ffmpeg', '-y', '-v', 'error', '-i', p,
                '-f', 'f32le', '-ar', str(sr), '-ac', '1', 'pipe:1'],
               capture_output=True)
           Path(p).unlink()
-          assert r.returncode == 0, f'FFmpeg decode failed: {r.stderr.decode()[:200]}'
+          assert r.returncode == 0, f'FFmpeg failed: {r.stderr.decode()[:200]}'
 
           d = np.frombuffer(r.stdout, dtype=np.float32)
           ratio = np.abs(d).max() / 0.5
           print(f'Decoded: {len(d)} samples, peak ratio: {ratio:.4f}')
           assert 0.9 < ratio < 1.1, f'Amplitude ratio out of range: {ratio}'
-          print('Smoke test PASSED')
+          print('PASSED')
           "
 
-      - name: Differentiable mode gradient check
+      - name: Smoke — differentiable gradient check
+        if: matrix.python-version == '3.12'
         run: |
           python -c "
           import torch
@@ -129,16 +110,13 @@ jobs:
           codec = DifferentiableAAC(sample_rate=48000, bitrate=128000)
           x = torch.randn(4096, requires_grad=True)
           y = codec(x)
-          loss = y.pow(2).mean()
-          loss.backward()
-          assert x.grad is not None, 'No gradient'
-          assert not x.grad.isnan().any(), 'NaN gradients'
-          assert x.grad.norm() > 0, 'Zero gradient'
-          print(f'Gradient norm: {x.grad.norm().item():.4f}')
-          print('Differentiable mode PASSED')
+          y.pow(2).mean().backward()
+          assert x.grad is not None and not x.grad.isnan().any() and x.grad.norm() > 0
+          print(f'Gradient norm: {x.grad.norm().item():.4f} — PASSED')
           "
 
-      - name: Batch encode check
+      - name: Smoke — batch encode
+        if: matrix.python-version == '3.12'
         run: |
           python -c "
           import numpy as np
@@ -146,8 +124,6 @@ jobs:
 
           streams = [np.random.randn(48000).astype(np.float32) for _ in range(4)]
           results = torch_aac.encode_batch(streams, sample_rate=48000, bitrate=128000)
-          assert len(results) == 4
-          assert all(len(r) > 0 for r in results)
-          print(f'Batch encode: 4 streams, sizes: {[len(r) for r in results]}')
-          print('Batch encode PASSED')
+          assert len(results) == 4 and all(len(r) > 0 for r in results)
+          print(f'Batch: {[len(r) for r in results]} — PASSED')
           "
