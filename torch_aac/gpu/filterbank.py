@@ -68,22 +68,49 @@ def frame_audio(
 def apply_window(
     frames: torch.Tensor,
     window_type: str = "sine",
+    window_sequence: torch.Tensor | None = None,
 ) -> torch.Tensor:
     """Apply a window function to framed audio.
 
+    When ``window_sequence`` is provided, applies per-frame transition windows
+    for LONG_START (ws=1) and LONG_STOP (ws=3) frames. EIGHT_SHORT (ws=2) and
+    ONLY_LONG (ws=0) frames use the regular sine window.
+
     Args:
-        frames: Framed audio of shape ``(..., window_length)``.
+        frames: Framed audio of shape ``(C, B, window_length)`` or
+            ``(..., window_length)``.
         window_type: Window type. Currently ``"sine"`` is supported.
+        window_sequence: Per-frame window sequence, shape ``(B,)``. If None,
+            applies the standard sine window to all frames.
 
     Returns:
         Windowed frames, same shape as input.
     """
     window_length = frames.shape[-1]
-    if window_type == "sine":
-        window = sine_window(window_length, device=frames.device)
-    else:
+    if window_type != "sine":
         raise ValueError(f"Unknown window type: {window_type!r}")
-    return frames * window
+
+    device = frames.device
+    window = sine_window(window_length, device=device)
+
+    if window_sequence is None:
+        return frames * window
+
+    from torch_aac.tables.window_tables import long_start_window, long_stop_window
+
+    result = frames * window  # default: sine window for all
+    win_start = long_start_window(window_length, device=device)
+    win_stop = long_stop_window(window_length, device=device)
+
+    # Apply transition windows per-frame.
+    # frames is (C, B, W), window_sequence is (B,).
+    for ws_val, win in [(1, win_start), (3, win_stop)]:
+        mask = window_sequence == ws_val  # (B,)
+        if mask.any():
+            # Broadcast: (C, B, W) * (1, B, W) where mask selects B
+            result[:, mask, :] = frames[:, mask, :] * win.unsqueeze(0)
+
+    return result
 
 
 def _get_mdct_basis(N: int, device: torch.device) -> torch.Tensor:

@@ -239,77 +239,117 @@ class AACEncoder:
             win_seq[i] = ws[0]
             prev = ws
         self._prev_win_seq_state = int(win_seq[-1].item())
-        # NOTE: Short block BITSTREAM support is incomplete — the scalefactor
-        # and spectral data layout for EIGHT_SHORT_SEQUENCE requires short SFB
-        # offsets (14 bands x 8 groups). Until that's wired up, we write ALL
-        # frames as LONG blocks in the bitstream. The short MDCT is still
-        # computed and used (flattened 8x128 to 1024) but the decoder treats
-        # it as a regular long block.
-        win_seq = torch.zeros_like(win_seq)  # force all LONG for now
-
         # Separate long and short frames
         is_short = win_seq == EIGHT_SHORT_SEQUENCE
         short_indices = torch.where(is_short)[0]
-        torch.where(~is_short)[0]
+        long_indices = torch.where(~is_short)[0]
 
         # 2. Apply window + MDCT
-        windowed = apply_window(batch_frames)  # (C, B, 2048)
+        windowed = apply_window(batch_frames, window_sequence=win_seq)  # (C, B, 2048)
         mdct_coeffs = mdct(windowed)  # (C, B, 1024)
         mdct_coeffs = mdct_coeffs.permute(1, 0, 2)  # (B, C, 1024)
 
-        # For short blocks: also compute short MDCT
+        # For short blocks: compute short MDCT and replace long MDCT
         from torch_aac.gpu.filterbank import mdct_short
 
-        short_mdct = None
         if len(short_indices) > 0:
-            # batch_frames is (C, B, 2048)
             short_frames = batch_frames[:, short_indices, :]  # (C, n_short, 2048)
             short_mdct_raw = mdct_short(short_frames)  # (C, n_short, 8, 128)
-            # Flatten 8x128 to 1024 for the existing pipeline
+            # Flatten 8x128 to 1024 for the pipeline
             short_mdct = short_mdct_raw.reshape(C, len(short_indices), 1024)
             short_mdct = short_mdct.permute(1, 0, 2)  # (n_short, C, 1024)
-            # Replace the long MDCT for short frames
             mdct_coeffs[short_indices] = short_mdct
 
-        # 3. Rate control: uniform global gain per frame.
+        # 3. Rate control per-channel target
         target = torch.full(
             (B,), self._target_bits / max(C, 1), device=self._device, dtype=torch.float32
         )
-        global_gains = find_global_gain(mdct_coeffs, target)
-        scalefactors = compute_scalefactors(mdct_coeffs, global_gains, self._sfb_offsets)
 
-        # 5. Quantize using per-band scalefactors
-        quantized = quantize_per_band(
-            mdct_coeffs, scalefactors, self._sfb_offsets, mode=QuantMode.HARD
+        # --- Process LONG and SHORT frames with different SFB offsets ---
+        from torch_aac.tables.sfb_tables import (
+            get_sfb_offsets_short,
+            get_sfb_offsets_short_tiled,
         )
-        quantized = quantized.clamp(-8191, 8191)
 
-        # 6. Codebook selection per channel
-        q_flat = quantized.reshape(B * C, -1)
-        codebooks = select_codebooks(q_flat, self._sfb_offsets, pairs_only=self._use_gpu_huffman)
-        codebooks = codebooks.reshape(B, C, -1)
+        sfb_short = get_sfb_offsets_short(self.config.sample_rate)
+        sfb_short_tiled = get_sfb_offsets_short_tiled(self.config.sample_rate)
+        num_sfb_long = len(self._sfb_offsets) - 1
+        num_sfb_short_tiled = len(sfb_short_tiled) - 1  # 8 * num_sfb_per_win
 
-        # 7. PNS: detect noise-like bands and compute noise scalefactors
+        # Allocate per-frame arrays (padded to max SFB count)
+        max_num_sfb = max(num_sfb_long, num_sfb_short_tiled)
+        global_gains = torch.zeros(B, device=self._device, dtype=torch.int64)
+        scalefactors = torch.zeros(B, C, max_num_sfb, device=self._device, dtype=torch.int64)
+        quantized = torch.zeros(B, C, 1024, device=self._device, dtype=mdct_coeffs.dtype)
+        codebooks = torch.zeros(B, C, max_num_sfb, device=self._device, dtype=torch.int64)
+
+        # Process LONG frames
+        if len(long_indices) > 0:
+            long_coeffs = mdct_coeffs[long_indices]
+            long_gains = find_global_gain(long_coeffs, target[long_indices])
+            long_sf = compute_scalefactors(long_coeffs, long_gains, self._sfb_offsets)
+            long_q = quantize_per_band(
+                long_coeffs, long_sf, self._sfb_offsets, mode=QuantMode.HARD
+            ).clamp(-8191, 8191)
+            long_cb = select_codebooks(
+                long_q.reshape(len(long_indices) * C, -1),
+                self._sfb_offsets,
+                pairs_only=self._use_gpu_huffman,
+            ).reshape(len(long_indices), C, -1)
+
+            global_gains[long_indices] = long_gains
+            scalefactors[long_indices, :, :num_sfb_long] = long_sf
+            quantized[long_indices] = long_q
+            codebooks[long_indices, :, :num_sfb_long] = long_cb
+
+        # Process SHORT frames (tiled SFB offsets over 1024 coefficients)
+        if len(short_indices) > 0:
+            short_coeffs = mdct_coeffs[short_indices]
+            short_gains = find_global_gain(short_coeffs, target[short_indices])
+            short_sf = compute_scalefactors(short_coeffs, short_gains, sfb_short_tiled)
+            short_q = quantize_per_band(
+                short_coeffs, short_sf, sfb_short_tiled, mode=QuantMode.HARD
+            ).clamp(-8191, 8191)
+            short_cb = select_codebooks(
+                short_q.reshape(len(short_indices) * C, -1),
+                sfb_short_tiled,
+                pairs_only=False,  # short blocks use CPU Huffman path
+            ).reshape(len(short_indices), C, -1)
+
+            global_gains[short_indices] = short_gains
+            scalefactors[short_indices, :, :num_sfb_short_tiled] = short_sf
+            quantized[short_indices] = short_q
+            codebooks[short_indices, :, :num_sfb_short_tiled] = short_cb
+
+        # 7. PNS: detect noise-like bands (long blocks only)
         noise_sf_np = None
-        if self._enable_pns:
+        if self._enable_pns and len(long_indices) > 0:
             from torch_aac.config import NOISE_BT
             from torch_aac.gpu.pns import compute_noise_energy_sf, detect_noise_bands
 
-            noise_mask = detect_noise_bands(mdct_coeffs, quantized, codebooks, self._sfb_offsets)
-            noise_sf = compute_noise_energy_sf(
-                mdct_coeffs, self._sfb_offsets, noise_mask, global_gains
+            long_q_slice = quantized[long_indices]
+            long_cb_slice = codebooks[long_indices, :, :num_sfb_long]
+            noise_mask = detect_noise_bands(
+                mdct_coeffs[long_indices], long_q_slice, long_cb_slice, self._sfb_offsets
             )
-            codebooks = torch.where(noise_mask, NOISE_BT, codebooks)
+            noise_sf = compute_noise_energy_sf(
+                mdct_coeffs[long_indices],
+                self._sfb_offsets,
+                noise_mask,
+                global_gains[long_indices],
+            )
+            # Write back updated codebooks for long frames
+            long_cb_updated = torch.where(noise_mask, NOISE_BT, long_cb_slice)
+            codebooks[long_indices, :, :num_sfb_long] = long_cb_updated
             noise_sf_np = noise_sf.cpu().numpy().astype(np.int32)
 
         # === GPU Huffman + C bit-packing (long blocks only) ===
-        # Short blocks fall through to the CPU path for now.
         has_short = is_short.any().item()
         if self._use_gpu_huffman and not has_short:
             return self._encode_batch_gpu_huffman(
                 quantized,
-                codebooks,
-                scalefactors,
+                codebooks[:, :, :num_sfb_long],
+                scalefactors[:, :, :num_sfb_long],
                 global_gains,
                 B,
                 noise_sf_np=noise_sf_np,
@@ -322,46 +362,67 @@ class AACEncoder:
         sf_np = scalefactors.cpu().numpy().astype(np.int32)
         win_seq_np = win_seq.cpu().numpy().astype(np.int32)
 
-        # For short blocks: use short SFB offsets
-        from torch_aac.tables.sfb_tables import get_sfb_offsets_short
-
-        sfb_short = get_sfb_offsets_short(self.config.sample_rate)
-
         adts_frames: list[bytes] = []
 
         for i in range(B):
-            nsf = noise_sf_np[i, 0] if noise_sf_np is not None else None
-            nsf_r = noise_sf_np[i, 1] if noise_sf_np is not None and C == 2 else None
+            nsf = None
+            nsf_r = None
+            if noise_sf_np is not None:
+                # Map long_indices back: noise_sf_np[j] corresponds to long_indices[j]
+                long_idx_list = long_indices.tolist()
+                if i in long_idx_list:
+                    j = long_idx_list.index(i)
+                    nsf = noise_sf_np[j, 0]
+                    if C == 2:
+                        nsf_r = noise_sf_np[j, 1]
+
             ws = int(win_seq_np[i])
-            # Pick SFB offsets based on block type
-            frame_sfb = sfb_short if ws == EIGHT_SHORT_SEQUENCE else self._sfb_offsets
+            is_short_frame = ws == EIGHT_SHORT_SEQUENCE
+
+            if is_short_frame:
+                frame_sfb = sfb_short  # per-window offsets for bitstream spectral data
+                frame_cb = codebooks_np[i, 0, :num_sfb_short_tiled]
+                frame_sf = sf_np[i, 0, :num_sfb_short_tiled]
+            else:
+                frame_sfb = self._sfb_offsets
+                frame_cb = codebooks_np[i, 0, :num_sfb_long]
+                frame_sf = sf_np[i, 0, :num_sfb_long]
+
             if C == 1:
                 frame_bytes = build_adts_frame(
                     config=self.config,
                     quantized=quantized_np[i, 0],
                     global_gain=int(gains_np[i]),
-                    codebook_indices=codebooks_np[i, 0],
+                    codebook_indices=frame_cb,
                     sfb_offsets=frame_sfb,
                     huffman_encode_fn=encode_spectral_band,
-                    scalefactors=sf_np[i, 0],
+                    scalefactors=frame_sf,
                     noise_scalefactors=nsf,
                     window_sequence=ws,
                 )
             else:
+                if is_short_frame:
+                    frame_cb_r = codebooks_np[i, 1, :num_sfb_short_tiled]
+                    frame_sf_r = sf_np[i, 1, :num_sfb_short_tiled]
+                else:
+                    frame_cb_r = codebooks_np[i, 1, :num_sfb_long]
+                    frame_sf_r = sf_np[i, 1, :num_sfb_long]
+
                 frame_bytes = build_adts_frame(
                     config=self.config,
                     quantized=quantized_np[i, 0],
                     global_gain=int(gains_np[i]),
-                    codebook_indices=codebooks_np[i, 0],
-                    sfb_offsets=self._sfb_offsets,
+                    codebook_indices=frame_cb,
+                    sfb_offsets=frame_sfb,
                     huffman_encode_fn=encode_spectral_band,
                     quantized_r=quantized_np[i, 1],
                     global_gain_r=int(gains_np[i]),
-                    codebook_indices_r=codebooks_np[i, 1],
-                    scalefactors=sf_np[i, 0],
-                    scalefactors_r=sf_np[i, 1],
+                    codebook_indices_r=frame_cb_r,
+                    scalefactors=frame_sf,
+                    scalefactors_r=frame_sf_r,
                     noise_scalefactors=nsf,
                     noise_scalefactors_r=nsf_r,
+                    window_sequence=ws,
                 )
             adts_frames.append(frame_bytes)
 

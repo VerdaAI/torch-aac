@@ -209,6 +209,7 @@ def write_channel_pair_element(
     huffman_encode_fn: object,
     scalefactors_l: NDArray[np.int32] | None = None,
     scalefactors_r: NDArray[np.int32] | None = None,
+    window_sequence: int = 0,
 ) -> None:
     """Write a channel_pair_element (CPE) to the bitstream."""
     writer.write_bits(0b001, 3)
@@ -223,6 +224,7 @@ def write_channel_pair_element(
         sfb_offsets,
         huffman_encode_fn,
         scalefactors_l,
+        window_sequence=window_sequence,
     )
     _write_ics(
         writer,
@@ -232,6 +234,7 @@ def write_channel_pair_element(
         sfb_offsets,
         huffman_encode_fn,
         scalefactors_r,
+        window_sequence=window_sequence,
     )
 
 
@@ -255,14 +258,27 @@ def _write_ics(
     scale_factor_grouping and section data uses 3-bit length fields.
     """
     is_short = window_sequence == 2
-    num_sfb_total = len(sfb_offsets) - 1
+    num_sfb_total = len(codebook_indices)
 
-    max_sfb_limit = 15 if is_short else 49
-    max_sfb = 0
-    for i in range(min(num_sfb_total, max_sfb_limit)):
-        if int(codebook_indices[i]) != 0:
-            max_sfb = i + 1
-    max_sfb = min(max_sfb, max_sfb_limit)
+    if is_short:
+        # Short blocks: codebook_indices has num_groups * num_sfb_per_win entries.
+        # max_sfb is the highest active band across ALL groups.
+        max_sfb_limit = 15
+        num_sfb_per_win = num_sfb_total // max(num_window_groups, 8)
+        max_sfb = 0
+        for g in range(max(num_window_groups, 8)):
+            for b in range(min(num_sfb_per_win, max_sfb_limit)):
+                idx = g * num_sfb_per_win + b
+                if idx < num_sfb_total and int(codebook_indices[idx]) != 0:
+                    max_sfb = max(max_sfb, b + 1)
+        max_sfb = min(max_sfb, max_sfb_limit)
+    else:
+        max_sfb_limit = 49
+        max_sfb = 0
+        for i in range(min(num_sfb_total, max_sfb_limit)):
+            if int(codebook_indices[i]) != 0:
+                max_sfb = i + 1
+        max_sfb = min(max_sfb, max_sfb_limit)
 
     # global_gain (8 bits)
     writer.write_bits(global_gain & 0xFF, 8)
@@ -299,30 +315,46 @@ def _write_ics(
         num_window_groups = 1
         group_len = [1]
 
+    # For short blocks, codebook_indices has num_window_groups * num_sfb_per_win
+    # entries.  Slice per-group codebooks: group g → cb[g*nspw : g*nspw + max_sfb].
+    num_sfb_per_win = num_sfb_total // num_window_groups if is_short else num_sfb_total
+
     if max_sfb > 0:
-        # For short blocks: section/sf/spectral data is repeated per group.
-        # Each group covers group_len[g] windows.
-        # For V1 with no grouping: 8 groups, each with 1 window.
         sect_bits = 3 if is_short else 5
         sect_escape = (1 << sect_bits) - 1
 
         for g in range(num_window_groups):
-            g * 128 if is_short else 0
-            active_cb = codebook_indices[:max_sfb]
-
-            # --- section_data ---
-            _write_section_data(writer, active_cb, max_sfb, sect_bits, sect_escape)
+            if is_short:
+                grp_cb = codebook_indices[g * num_sfb_per_win : g * num_sfb_per_win + max_sfb]
+            else:
+                grp_cb = codebook_indices[:max_sfb]
+            _write_section_data(writer, grp_cb, max_sfb, sect_bits, sect_escape)
 
         # --- scalefactor_data (all groups, sequential) ---
-        # Scalefactors are delta-encoded across all groups sequentially
         active_sf = scalefactors if scalefactors is not None else None
         active_nsf = noise_scalefactors if noise_scalefactors is not None else None
         if is_short:
-            # For short blocks: num_window_groups * max_sfb entries
             total_sfb = num_window_groups * max_sfb
-            sf_for_write = active_sf[:total_sfb] if active_sf is not None else None
-            cb_for_write = np.tile(codebook_indices[:max_sfb], num_window_groups)
-            _write_scalefactor_data(writer, total_sfb, cb_for_write, global_gain, sf_for_write)
+            # Build interleaved cb/sf arrays: [g0_b0..g0_bM, g1_b0..g1_bM, ...]
+            cb_for_write = np.concatenate(
+                [
+                    codebook_indices[g * num_sfb_per_win : g * num_sfb_per_win + max_sfb]
+                    for g in range(num_window_groups)
+                ]
+            )
+            sf_for_write = (
+                np.concatenate(
+                    [
+                        active_sf[g * num_sfb_per_win : g * num_sfb_per_win + max_sfb]
+                        for g in range(num_window_groups)
+                    ]
+                )
+                if active_sf is not None
+                else None
+            )
+            _write_scalefactor_data(
+                writer, total_sfb, cb_for_write, global_gain, sf_for_write
+            )
         else:
             _write_scalefactor_data(
                 writer,
@@ -342,18 +374,14 @@ def _write_ics(
     if max_sfb > 0:
         # --- spectral_data ---
         if is_short:
-            # Write spectral data for each group's windows
             for g in range(num_window_groups):
+                grp_cb = codebook_indices[g * num_sfb_per_win : g * num_sfb_per_win + max_sfb]
                 for w in range(group_len[g]):
                     win_idx = sum(group_len[:g]) + w
                     offset = win_idx * 128
                     win_data = quantized[offset : offset + 128]
                     _write_spectral_data(
-                        writer,
-                        win_data,
-                        codebook_indices[:max_sfb],
-                        sfb_offsets,
-                        huffman_encode_fn,
+                        writer, win_data, grp_cb, sfb_offsets, huffman_encode_fn
                     )
         else:
             _write_spectral_data(
@@ -596,6 +624,7 @@ def build_adts_frame(
             huffman_encode_fn,
             scalefactors_l=scalefactors,
             scalefactors_r=scalefactors_r,
+            window_sequence=window_sequence,
         )
     else:
         write_single_channel_element(

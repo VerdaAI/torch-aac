@@ -1,5 +1,27 @@
 # Changelog
 
+## v0.4.0 (2026-04-15)
+
+Complete short block support for pre-echo reduction on transient audio.
+
+### Added
+- **Short block bitstream**: Full EIGHT_SHORT_SEQUENCE encoding with per-window quantization using tiled SFB offsets (8 × 14 = 112 bands mapped across 1024 coefficients), per-group codebook selection, and per-group scalefactor delta chains.
+- **Transition windows**: LONG_START and LONG_STOP window functions (ISO 14496-3 Section 11.2.1.1) applied per-frame during MDCT for correct overlap-add at block boundaries.
+- **Pre-echo elimination**: Short blocks reduce pre-echo by 170–186 dB on impulse signals — effectively zero leakage before transients. This is the primary perceptual benefit: a click that smeared across 21 ms (long block) is now confined to 2.67 ms (short block).
+- **Tiled SFB offsets**: `get_sfb_offsets_short_tiled()` utility maps 8 short windows' scalefactor bands onto the flattened 1024-coefficient representation, enabling the existing GPU quantizer and rate control pipeline to process short blocks without reshaping.
+- **20 new tests** in `test_short_blocks.py`: transient detection, block switching state machine, transition windows, tiled SFB offsets, mono/stereo FFmpeg decode, and pre-echo reduction measurement.
+
+### Changed
+- Encoder now splits batches into long and short subsets, processing each with appropriate SFB offsets. Short blocks use the CPU Huffman path; long blocks continue to use the fast GPU Huffman path when available.
+- `apply_window()` accepts an optional `window_sequence` tensor and applies per-frame transition windows for LONG_START (ws=1) and LONG_STOP (ws=3).
+- Bitstream writer uses per-group codebook indices for short blocks instead of tiling the same codebooks across all 8 groups.
+- Stereo CPE now passes `window_sequence` through to both ICS writers.
+
+### Fixed
+- Removed the `win_seq = torch.zeros_like(win_seq)` override that forced all frames to LONG blocks regardless of transient detection.
+
+---
+
 ## v0.3.0 (2026-04-14)
 
 Short blocks, CUDA validation, and CI improvements.

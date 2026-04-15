@@ -631,6 +631,29 @@ def get_num_sfb(sample_rate: int) -> int:
     return len(SFB_LONG[sample_rate])
 
 
+def get_sfb_offsets_short_tiled(sample_rate: int) -> list[int]:
+    """Return SFB offsets for 8 short windows tiled across 1024 coefficients.
+
+    Maps 8 × num_sfb_short bands onto the flattened 8×128 = 1024 coefficient
+    representation. Band ``g * num_sfb_short + b`` covers spectral lines
+    ``[g*128 + short_offsets[b], g*128 + short_offsets[b+1])``.
+
+    This allows the existing 1024-coefficient pipeline (quantizer, rate control,
+    codebook selection) to process short blocks without reshaping.
+
+    Returns:
+        List of offsets with ``8 * num_sfb_short + 1`` entries, ending at 1024.
+    """
+    short_offsets = SFB_SHORT_OFFSETS[sample_rate]
+    result = []
+    for w in range(8):
+        base = w * 128
+        start = 0 if w == 0 else 1  # skip duplicated boundary
+        for j in range(start, len(short_offsets)):
+            result.append(base + short_offsets[j])
+    return result
+
+
 def get_num_sfb_short(sample_rate: int) -> int:
     """Return the number of scalefactor bands for short blocks."""
     return len(SFB_SHORT_OFFSETS[sample_rate]) - 1
