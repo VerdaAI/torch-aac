@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.3.0 (2026-04-14)
+
+Short blocks, CUDA validation, and CI improvements.
+
+### Added
+- **Short block infrastructure** (partial): transient detection via energy ratios, sequential window sequence state machine (ONLY_LONG → LONG_START → EIGHT_SHORT → LONG_STOP), short MDCT (8 x 128-point), short SFB tables for all sample rates, bitstream writer scaffolding for 3-bit section lengths and scale_factor_grouping. **Note:** bitstream still writes all frames as LONG blocks because short block scalefactor layout (14 bands x 8 groups) is not yet integrated with the quantizer. Pre-echo reduction is not active yet — completing this is the v0.4.0 priority.
+- **CUDA benchmarks**: Validated on RTX 3090 (212× realtime, 570 MB VRAM) and RTX 3080 Ti (206× realtime). Correctness verified (peak ratio ~1.0), differentiable gradients confirmed. Benchmark script at `benchmarks/cuda_validation.py`.
+
+### Performance
+- **212× realtime on RTX 3090** (60s mono 128 kbps) — up from ~97× on CPU.
+- **1.2–3.4× faster than FFmpeg** native AAC on CUDA, depending on clip length.
+- **203× aggregate** for 8-stream batch on RTX 3090.
+
+### Fixed
+- CI smoke tests folded into test job (avoids redundant ~2 GB PyTorch install, ~3 min faster).
+- Notebook lint errors (import order, semicolons, one-line ifs) and formatting.
+- PyTorch 2.10+ compatibility (`total_mem` → `total_memory` attribute).
+
+---
+
 ## v0.2.0 (2026-04-14)
 
 Integrations, tooling, and documentation release.

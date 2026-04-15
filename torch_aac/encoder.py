@@ -229,18 +229,23 @@ class AACEncoder:
 
         # Detect per-frame (use channel 0 for detection)
         is_transient = detect_transients(batch_frames[0])  # (B,)
-        # State machine: track window sequence across frames
-        if not hasattr(self, "_prev_win_seq"):
-            self._prev_win_seq = torch.full(
-                (B,), ONLY_LONG_SEQUENCE, device=self._device, dtype=torch.int64
-            )
-        # Expand prev state to match batch size
-        if self._prev_win_seq.shape[0] != B:
-            self._prev_win_seq = torch.full(
-                (B,), ONLY_LONG_SEQUENCE, device=self._device, dtype=torch.int64
-            )
-        win_seq = get_window_sequence(is_transient, self._prev_win_seq)
-        self._prev_win_seq = win_seq.clone()
+        # State machine: run sequentially since each frame depends on previous.
+        if not hasattr(self, "_prev_win_seq_state"):
+            self._prev_win_seq_state = ONLY_LONG_SEQUENCE
+        prev = torch.tensor([self._prev_win_seq_state], device=self._device, dtype=torch.int64)
+        win_seq = torch.zeros(B, device=self._device, dtype=torch.int64)
+        for i in range(B):
+            ws = get_window_sequence(is_transient[i : i + 1], prev)
+            win_seq[i] = ws[0]
+            prev = ws
+        self._prev_win_seq_state = int(win_seq[-1].item())
+        # NOTE: Short block BITSTREAM support is incomplete — the scalefactor
+        # and spectral data layout for EIGHT_SHORT_SEQUENCE requires short SFB
+        # offsets (14 bands x 8 groups). Until that's wired up, we write ALL
+        # frames as LONG blocks in the bitstream. The short MDCT is still
+        # computed and used (flattened 8x128 to 1024) but the decoder treats
+        # it as a regular long block.
+        win_seq = torch.zeros_like(win_seq)  # force all LONG for now
 
         # Separate long and short frames
         is_short = win_seq == EIGHT_SHORT_SEQUENCE
