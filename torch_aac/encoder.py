@@ -260,9 +260,14 @@ class AACEncoder:
             short_mdct = short_mdct.permute(1, 0, 2)  # (n_short, C, 1024)
             mdct_coeffs[short_indices] = short_mdct
 
-        # 3. Rate control per-channel target
+        # 3. Rate control per-channel target.
+        # Subtract fixed overhead (ADTS header + ICS syntax + section data +
+        # scalefactor data + flags + END + padding) from the bit budget so
+        # rate control targets only the spectral data portion.
+        _SYNTAX_OVERHEAD_BITS = 300  # ADTS(56) + ICS(19) + sections(~100) + SF(~100) + misc(~25)
+        spectral_budget = self._target_bits - _SYNTAX_OVERHEAD_BITS
         target = torch.full(
-            (B,), self._target_bits / max(C, 1), device=self._device, dtype=torch.float32
+            (B,), spectral_budget / max(C, 1), device=self._device, dtype=torch.float32
         )
 
         # --- Process LONG and SHORT frames with different SFB offsets ---

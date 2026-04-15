@@ -102,6 +102,13 @@ def quantize(
             quantized = scaled + noise
         else:
             quantized = torch.round(scaled)
+    elif mode == QuantMode.CUBIC:
+        # Cubic soft-rounding: round(x) + (x - round(x))^3
+        # Max deviation from hard rounding: 0.125 (at x = n ± 0.5)
+        # Gradient: 3*(x - round(x))^2, zero at integers, 0.75 at half-integers
+        r = torch.round(scaled)
+        residual = scaled - r
+        quantized = r + residual**3
     else:
         raise ValueError(f"Unknown quantization mode: {mode}")
 
@@ -197,6 +204,9 @@ def quantize_per_band(
                 quantized = scaled + torch.rand_like(scaled) - 0.5
             else:
                 quantized = torch.round(scaled)
+        elif mode == QuantMode.CUBIC:
+            r = torch.round(scaled)
+            quantized = r + (scaled - r) ** 3
         else:
             raise ValueError(f"Unknown mode: {mode}")
 
@@ -281,4 +291,11 @@ def estimate_bit_count(
     abs_q = quantized.abs().long().clamp(0, 8192)
     cost = _BITS_PER_COEF_TABLE[abs_q]
 
-    return cost.sum(dim=-1)
+    # The lookup table models (q, 0) pairs. Real encoding pairs consecutive
+    # non-zero coefficients, which costs more. Apply a density-adaptive
+    # correction: at density d, the fraction of (nonzero, nonzero) pairs is
+    # ~d², and each such pair costs roughly 1.5x the (q, 0) estimate.
+    total = cost.sum(dim=-1)
+    density = (abs_q > 0).float().mean(dim=-1)
+    pair_correction = 1.0 + 0.5 * density**2
+    return total * pair_correction

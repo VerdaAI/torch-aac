@@ -94,6 +94,13 @@ class QuantMode(Enum):
     NOISE = "noise"
     """Additive uniform noise approximation of quantization."""
 
+    CUBIC = "cubic"
+    """Cubic soft-rounding: ``round(x) + (x - round(x))^3``.
+
+    Provides real gradients (unlike STE) with small deviation from hard
+    rounding (max 0.125 quantized units). Useful for warm-up training
+    before switching to STE for artifact-faithful fine-tuning."""
+
 
 # ---------------------------------------------------------------------------
 # Encoder configuration

@@ -53,7 +53,9 @@ class DifferentiableAAC(nn.Module):
             channels=channels,
             bitrate=bitrate,
             device=device,
-            quant_mode=QuantMode.STE if quant_mode == "ste" else QuantMode.NOISE,
+            quant_mode={"ste": QuantMode.STE, "noise": QuantMode.NOISE, "cubic": QuantMode.CUBIC}[
+                quant_mode
+            ],
         )
         self._device = self.config.resolved_device
         self._target_bits = self.config.bits_per_frame
