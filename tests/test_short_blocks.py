@@ -79,7 +79,12 @@ class TestBlockSwitching:
     def test_full_transition_sequence(self) -> None:
         """Test ONLY_LONG -> LONG_START -> EIGHT_SHORT -> LONG_STOP -> ONLY_LONG."""
         transients = [True, True, False, False]
-        expected = [LONG_START_SEQUENCE, EIGHT_SHORT_SEQUENCE, LONG_STOP_SEQUENCE, ONLY_LONG_SEQUENCE]
+        expected = [
+            LONG_START_SEQUENCE,
+            EIGHT_SHORT_SEQUENCE,
+            LONG_STOP_SEQUENCE,
+            ONLY_LONG_SEQUENCE,
+        ]
         prev = torch.tensor([ONLY_LONG_SEQUENCE])
         for is_trans, exp in zip(transients, expected, strict=True):
             ws = get_window_sequence(torch.tensor([is_trans]), prev)
@@ -209,6 +214,7 @@ class TestShortBlockEncoding:
             enc = AACEncoder(sample_rate=sr, channels=1, bitrate=64000)
             if force_long:
                 import torch_aac.gpu.block_switch as bs
+
                 old = bs.detect_transients
                 bs.detect_transients = lambda f, threshold=10.0: torch.zeros(
                     f.shape[:-1], dtype=torch.bool, device=f.device

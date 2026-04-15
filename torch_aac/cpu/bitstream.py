@@ -352,9 +352,7 @@ def _write_ics(
                 if active_sf is not None
                 else None
             )
-            _write_scalefactor_data(
-                writer, total_sfb, cb_for_write, global_gain, sf_for_write
-            )
+            _write_scalefactor_data(writer, total_sfb, cb_for_write, global_gain, sf_for_write)
         else:
             _write_scalefactor_data(
                 writer,
@@ -380,9 +378,7 @@ def _write_ics(
                     win_idx = sum(group_len[:g]) + w
                     offset = win_idx * 128
                     win_data = quantized[offset : offset + 128]
-                    _write_spectral_data(
-                        writer, win_data, grp_cb, sfb_offsets, huffman_encode_fn
-                    )
+                    _write_spectral_data(writer, win_data, grp_cb, sfb_offsets, huffman_encode_fn)
         else:
             _write_spectral_data(
                 writer, quantized, codebook_indices[:max_sfb], sfb_offsets, huffman_encode_fn
