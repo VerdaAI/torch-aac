@@ -96,6 +96,11 @@ def apply_window(
     if window_sequence is None:
         return frames * window
 
+    # Fast path: skip per-frame logic when no transition frames
+    has_transitions = ((window_sequence == 1) | (window_sequence == 3)).any().item()
+    if not has_transitions:
+        return frames * window
+
     from torch_aac.tables.window_tables import long_start_window, long_stop_window
 
     result = frames * window  # default: sine window for all
