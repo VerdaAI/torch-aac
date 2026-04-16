@@ -364,8 +364,8 @@ def _write_ics(
             )
 
     # --- pulse, TNS, gain control flags ---
-    if not is_short:
-        writer.write_bits(0, 1)  # pulse_data_present (not for short blocks)
+    # pulse_data_present is ALWAYS written (ISO 14496-3); must be 0 for short blocks.
+    writer.write_bits(0, 1)  # pulse_data_present: 0
     writer.write_bits(0, 1)  # tns_data_present: 0
     writer.write_bits(0, 1)  # gain_control_data_present: 0
 

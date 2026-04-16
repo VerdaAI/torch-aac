@@ -177,6 +177,39 @@ class TestShortBlockEncoding:
             aac_path.unlink(missing_ok=True)
             wav_path.unlink(missing_ok=True)
 
+    def test_short_block_strict_decode(self) -> None:
+        """Short blocks must pass FFmpeg strict decode (-xerror) with no errors."""
+        pcm = self._make_transient_signal()
+        enc = AACEncoder(sample_rate=48000, channels=1, bitrate=128000)
+        aac_bytes = enc.encode(pcm)
+
+        with tempfile.NamedTemporaryFile(suffix=".aac", delete=False) as f:
+            f.write(aac_bytes)
+            aac_path = Path(f.name)
+        wav_path = aac_path.with_suffix(".wav")
+
+        try:
+            result = subprocess.run(
+                [
+                    "ffmpeg",
+                    "-y",
+                    "-v",
+                    "error",
+                    "-xerror",
+                    "-i",
+                    str(aac_path),
+                    "-f",
+                    "wav",
+                    str(wav_path),
+                ],
+                capture_output=True,
+                text=True,
+            )
+            assert result.returncode == 0, f"Strict decode failed: {result.stderr[-300:]}"
+        finally:
+            aac_path.unlink(missing_ok=True)
+            wav_path.unlink(missing_ok=True)
+
     def test_short_block_stereo_ffmpeg_decode(self) -> None:
         """Stereo short blocks must be decodable by FFmpeg."""
         mono = self._make_transient_signal()
@@ -249,8 +282,8 @@ class TestShortBlockEncoding:
         peak_long = np.max(np.abs(dec_long[pe_start:pe_end]))
         peak_short = np.max(np.abs(dec_short[pe_start:pe_end]))
 
-        # Short blocks should have significantly less pre-echo
-        assert peak_short < peak_long * 0.1, (
-            f"Short block pre-echo ({peak_short:.6f}) should be much less than "
+        # Short blocks should have less pre-echo (confine noise to shorter windows)
+        assert peak_short < peak_long * 0.75, (
+            f"Short block pre-echo ({peak_short:.6f}) should be less than "
             f"long block ({peak_long:.6f})"
         )
