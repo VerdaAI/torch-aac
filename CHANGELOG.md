@@ -1,5 +1,19 @@
 # Changelog
 
+## v0.5.1 (2026-04-16)
+
+Critical short block bitstream fix.
+
+### Fixed
+- **Short block bitstream corruption**: `pulse_data_present` bit was missing from EIGHT_SHORT_SEQUENCE frames. The AAC spec (ISO 14496-3) requires this bit for all window types, but we skipped it for short blocks, causing a 1-bit shift that corrupted all subsequent payload parsing. FFmpeg's lenient decoder masked this — strict decode (`-xerror`) always failed on short block frames. Real audio with transients (speech, percussive music) was most affected.
+- **PyTorch 2.10+ compatibility**: `props.total_mem` renamed to `props.total_memory` — use `getattr` fallback.
+
+### Added
+- **Strict decode test** (`test_short_block_strict_decode`): validates short block frames pass FFmpeg `-xerror` mode.
+- **Real audio benchmark** (`benchmarks/real_audio_benchmark.py`): cross-dataset comparison against FFmpeg on Bach10, LibriSpeech, and musdb18.
+
+---
+
 ## v0.5.0 (2026-04-16)
 
 SFB table correctness, tighter rate control, and cubic quantization mode.
