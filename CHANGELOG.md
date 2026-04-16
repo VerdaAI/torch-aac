@@ -1,5 +1,24 @@
 # Changelog
 
+## v0.5.0 (2026-04-16)
+
+SFB table correctness, tighter rate control, and cubic quantization mode.
+
+### Added
+- **Cubic quantization mode** (`QuantMode.CUBIC`): soft-rounding surrogate `round(x) + (x - round(x))³` with real gradients (max 0.125 deviation from hard rounding). Available via `DifferentiableAAC(quant_mode="cubic")`. Recommended for training warm-up before STE fine-tuning.
+
+### Fixed
+- **Long-window SFB tables** for 64000, 32000, 24000, 22050, and 8000 Hz corrected to match FFmpeg's `aactab.c` reference. Previous tables had wrong band widths (64 kHz summed to 1376 instead of 1024), missing bands (32 kHz had 49 instead of 51), or off-by-4 totals (8 kHz summed to 1028).
+
+### Changed
+- **Rate control tightened**: subtract 300-bit syntax overhead from bit budget and apply density-adaptive pair-cost correction to the Huffman bit estimator. Noise at 128 kbps: 186 k → 128 k actual (+0% error). Tonal signals: ~+10% error (down from +35%).
+
+### Performance
+- **Pure-Python block-switch state machine** replaces per-frame tensor allocation (58 ms → <1 ms for 234 frames).
+- **Fast-path for all-long batches** skips short-block tensor splitting when no transients are detected (common case). Throughput maintained at ~98× realtime on MPS.
+
+---
+
 ## v0.4.0 (2026-04-15)
 
 Complete short block support for pre-echo reduction on transient audio.

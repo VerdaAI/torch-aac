@@ -2,6 +2,7 @@
 
 | Version | Date       | Summary |
 |---------|------------|---------|
+| 0.5.0   | 2026-04-16 | Fix SFB tables (5 sample rates), tighten rate control, add cubic quantization, optimize state machine |
 | 0.4.0   | 2026-04-15 | Complete short blocks: pre-echo elimination (170+ dB), transition windows, tiled SFB quantization |
 | 0.3.0   | 2026-04-14 | Short block infra (partial), CUDA validated (212x on RTX 3090), CI improvements |
 | 0.2.0   | 2026-04-14 | torchaudio integration, Colab demo, CI/PyPI workflows, per-directory docs |
