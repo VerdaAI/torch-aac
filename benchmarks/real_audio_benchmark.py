@@ -161,36 +161,45 @@ def decode_aac(aac_path: str, wav_path: str) -> np.ndarray:
 def align_xcorr(
     original: np.ndarray, decoded: np.ndarray, max_shift: int = 4096
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Align decoded to original using cross-correlation, return trimmed pair."""
-    # Use a central segment for correlation to avoid edge effects
-    seg_len = min(len(original), len(decoded), 48000)
-    start = min(4096, len(original) // 4)
-    o_seg = original[start : start + seg_len]
-    d_seg = decoded[: seg_len + max_shift]
+    """Align decoded to original using cross-correlation, return trimmed pair.
 
-    # Cross-correlate
-    corr = np.correlate(d_seg, o_seg[: min(len(o_seg), 8000)], mode="full")
-    center = len(o_seg[: min(len(o_seg), 8000)]) - 1
-    search_lo = max(0, center - max_shift)
-    search_hi = min(len(corr), center + max_shift)
-    best_idx = search_lo + np.argmax(np.abs(corr[search_lo:search_hi]))
-    delay = best_idx - center  # positive = decoded is shifted right
+    Uses a chunk from the middle of both signals for robust correlation,
+    avoiding edge effects and silence at the start.
+    """
+    min_len = min(len(original), len(decoded))
+    if min_len < 4096:
+        n = min(len(original), len(decoded))
+        return original[:n], decoded[:n]
 
-    # Apply alignment
+    # Take a chunk from the middle of the original
+    mid = min_len // 2
+    chunk_len = min(8000, mid // 2)
+    o_chunk = original[mid : mid + chunk_len]
+
+    # Search decoded around the same position ± max_shift
+    search_start = max(0, mid - max_shift)
+    search_end = min(len(decoded), mid + chunk_len + max_shift)
+    d_search = decoded[search_start:search_end]
+
+    # Cross-correlate (mode='valid' gives one value per offset)
+    corr = np.correlate(d_search, o_chunk, mode="valid")
+    best_offset = int(np.argmax(np.abs(corr)))
+    delay = search_start + best_offset - mid  # positive = decoded shifted right
+
+    # Apply alignment: shift decoded so decoded[delay] aligns with original[0]
+    skip = 2048  # skip edges for cleaner measurement
     if delay >= 0:
-        d_aligned = decoded[delay:]
-        o_aligned = original[:]
+        o_start = skip
+        d_start = skip + delay
     else:
-        d_aligned = decoded[:]
-        o_aligned = original[-delay:]
+        o_start = skip - delay
+        d_start = skip
 
-    # Trim to same length, skip edges
-    skip = 2048
-    n = min(len(o_aligned) - skip, len(d_aligned) - skip)
+    n = min(len(original) - o_start, len(decoded) - d_start) - skip
     if n <= 0:
-        n = min(len(o_aligned), len(d_aligned))
-        return o_aligned[:n], d_aligned[:n]
-    return o_aligned[skip : skip + n], d_aligned[skip : skip + n]
+        n = min(len(original), len(decoded))
+        return original[:n], decoded[:n]
+    return original[o_start : o_start + n], decoded[d_start : d_start + n]
 
 
 def compute_snr(original: np.ndarray, decoded: np.ndarray) -> float:
