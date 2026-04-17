@@ -212,34 +212,121 @@ def write_channel_pair_element(
     noise_scalefactors_l: NDArray[np.int32] | None = None,
     noise_scalefactors_r: NDArray[np.int32] | None = None,
     window_sequence: int = 0,
+    ms_mask: NDArray[np.int32] | None = None,
 ) -> None:
-    """Write a channel_pair_element (CPE) to the bitstream."""
-    writer.write_bits(0b001, 3)
-    writer.write_bits(0, 4)
-    writer.write_bits(0, 1)  # common_window=0
+    """Write a channel_pair_element (CPE) to the bitstream.
 
-    _write_ics(
-        writer,
-        quantized_l,
-        global_gain_l,
-        codebook_indices_l,
-        sfb_offsets,
-        huffman_encode_fn,
-        scalefactors_l,
-        noise_scalefactors=noise_scalefactors_l,
-        window_sequence=window_sequence,
-    )
-    _write_ics(
-        writer,
-        quantized_r,
-        global_gain_r,
-        codebook_indices_r,
-        sfb_offsets,
-        huffman_encode_fn,
-        scalefactors_r,
-        noise_scalefactors=noise_scalefactors_r,
-        window_sequence=window_sequence,
-    )
+    When ``ms_mask`` is provided, uses ``common_window=1`` with shared
+    ``ics_info`` and per-band M/S flags.  Otherwise falls back to
+    ``common_window=0`` (independent L/R).
+    """
+    writer.write_bits(0b001, 3)  # CPE id
+    writer.write_bits(0, 4)  # element_instance_tag
+
+    use_common = ms_mask is not None
+    writer.write_bits(1 if use_common else 0, 1)  # common_window
+
+    if use_common:
+        # --- shared ics_info (written once for both channels) ---
+        is_short = window_sequence == 2
+        writer.write_bits(0, 1)  # ics_reserved_bit
+        writer.write_bits(window_sequence, 2)
+        writer.write_bits(0, 1)  # window_shape = sine
+
+        # Compute max_sfb across BOTH channels
+        num_sfb = len(codebook_indices_l)
+        if is_short:
+            max_sfb_limit = 15
+            num_sfb_per_win = num_sfb // 8
+            max_sfb = 0
+            for g in range(8):
+                for b in range(min(num_sfb_per_win, max_sfb_limit)):
+                    idx = g * num_sfb_per_win + b
+                    if idx < num_sfb and (
+                        int(codebook_indices_l[idx]) != 0 or int(codebook_indices_r[idx]) != 0
+                    ):
+                        max_sfb = max(max_sfb, b + 1)
+            max_sfb = min(max_sfb, max_sfb_limit)
+            writer.write_bits(max_sfb, 4)
+            writer.write_bits(0, 7)  # no grouping
+            num_window_groups = 8
+        else:
+            max_sfb_limit = 51
+            max_sfb = 0
+            for i in range(min(num_sfb, max_sfb_limit)):
+                if int(codebook_indices_l[i]) != 0 or int(codebook_indices_r[i]) != 0:
+                    max_sfb = i + 1
+            max_sfb = min(max_sfb, max_sfb_limit)
+            writer.write_bits(max_sfb, 6)
+            writer.write_bits(0, 1)  # predictor_data_present
+            num_window_groups = 1
+
+        # --- ms_mask_present + per-band ms_used ---
+        if max_sfb == 0 or ms_mask is None or not ms_mask.any():
+            writer.write_bits(0, 2)  # ms_mask_present = 0 (no M/S)
+        elif ms_mask[:max_sfb].all():
+            writer.write_bits(2, 2)  # ms_mask_present = 2 (all bands M/S)
+        else:
+            writer.write_bits(1, 2)  # ms_mask_present = 1 (per-band)
+            for g in range(num_window_groups):
+                for sfb in range(max_sfb):
+                    idx = g * (max_sfb if not is_short else num_sfb_per_win) + sfb
+                    if idx < len(ms_mask):
+                        writer.write_bits(1 if ms_mask[idx] else 0, 1)
+                    else:
+                        writer.write_bits(0, 1)
+
+        # --- ICS for L and R (skip ics_info — already written) ---
+        _write_ics(
+            writer,
+            quantized_l,
+            global_gain_l,
+            codebook_indices_l,
+            sfb_offsets,
+            huffman_encode_fn,
+            scalefactors_l,
+            noise_scalefactors=noise_scalefactors_l,
+            window_sequence=window_sequence,
+            skip_ics_info=True,
+            shared_max_sfb=max_sfb,
+        )
+        _write_ics(
+            writer,
+            quantized_r,
+            global_gain_r,
+            codebook_indices_r,
+            sfb_offsets,
+            huffman_encode_fn,
+            scalefactors_r,
+            noise_scalefactors=noise_scalefactors_r,
+            window_sequence=window_sequence,
+            skip_ics_info=True,
+            shared_max_sfb=max_sfb,
+        )
+    else:
+        # --- Independent L/R (no common window) ---
+        _write_ics(
+            writer,
+            quantized_l,
+            global_gain_l,
+            codebook_indices_l,
+            sfb_offsets,
+            huffman_encode_fn,
+            scalefactors_l,
+            noise_scalefactors=noise_scalefactors_l,
+            window_sequence=window_sequence,
+        )
+        _write_ics(
+            writer,
+            quantized_r,
+            global_gain_r,
+            codebook_indices_r,
+            sfb_offsets,
+            huffman_encode_fn,
+            scalefactors_r,
+            noise_scalefactors=noise_scalefactors_r,
+            window_sequence=window_sequence,
+        )
 
 
 def _write_ics(
@@ -254,19 +341,26 @@ def _write_ics(
     window_sequence: int = 0,
     num_window_groups: int = 1,
     group_len: list[int] | None = None,
+    skip_ics_info: bool = False,
+    shared_max_sfb: int | None = None,
 ) -> None:
     """Write an individual_channel_stream (ICS).
 
     Supports both long blocks (window_sequence=0,1,3) and short blocks
     (window_sequence=2). For short blocks, the ICS header includes
     scale_factor_grouping and section data uses 3-bit length fields.
+
+    When ``skip_ics_info`` is True, the ics_info block is omitted (it was
+    already written by the CPE wrapper for common_window=1).
+    When ``shared_max_sfb`` is set, use it instead of computing from
+    codebook_indices (required for common_window=1 parity).
     """
     is_short = window_sequence == 2
     num_sfb_total = len(codebook_indices)
 
-    if is_short:
-        # Short blocks: codebook_indices has num_groups * num_sfb_per_win entries.
-        # max_sfb is the highest active band across ALL groups.
+    if shared_max_sfb is not None:
+        max_sfb = shared_max_sfb
+    elif is_short:
         max_sfb_limit = 15
         num_sfb_per_win = num_sfb_total // max(num_window_groups, 8)
         max_sfb = 0
@@ -277,7 +371,7 @@ def _write_ics(
                     max_sfb = max(max_sfb, b + 1)
         max_sfb = min(max_sfb, max_sfb_limit)
     else:
-        max_sfb_limit = 51  # max long-window bands across all sample rates
+        max_sfb_limit = 51
         max_sfb = 0
         for i in range(min(num_sfb_total, max_sfb_limit)):
             if int(codebook_indices[i]) != 0:
@@ -287,37 +381,42 @@ def _write_ics(
     # global_gain (8 bits)
     writer.write_bits(global_gain & 0xFF, 8)
 
-    # --- ics_info ---
-    writer.write_bits(0, 1)  # ics_reserved_bit
-    writer.write_bits(window_sequence, 2)  # window_sequence
-    writer.write_bits(0, 1)  # window_shape: 0=sine
-
-    if is_short:
-        writer.write_bits(max_sfb, 4)  # max_sfb (4 bits for short)
-        # scale_factor_grouping: 7 bits, one per window boundary.
-        # Bit=1 means this window is grouped with the next.
-        # For no grouping (8 independent groups): 0b0000000 = 0.
-        # For all-grouped (1 group of 8): 0b1111111 = 127.
-        if group_len is None:
-            # Default: no grouping (8 groups of 1 window each)
-            writer.write_bits(0, 7)
+    if skip_ics_info:
+        # ics_info already written by CPE (common_window=1).
+        # Still need to set up num_window_groups / group_len for later.
+        if is_short:
             num_window_groups = 8
             group_len = [1] * 8
         else:
-            # Encode grouping: bit i = 1 if window i+1 is in same group as window i
-            grouping_bits = 0
-            win_idx = 0
-            for g in range(len(group_len)):
-                for w in range(1, group_len[g]):
-                    grouping_bits |= 1 << (6 - (win_idx + w - 1))
-                win_idx += group_len[g]
-            writer.write_bits(grouping_bits, 7)
-            num_window_groups = len(group_len)
+            num_window_groups = 1
+            group_len = [1]
     else:
-        writer.write_bits(max_sfb, 6)  # max_sfb (6 bits for long)
-        writer.write_bits(0, 1)  # predictor_data_present: 0
-        num_window_groups = 1
-        group_len = [1]
+        # --- ics_info ---
+        writer.write_bits(0, 1)  # ics_reserved_bit
+        writer.write_bits(window_sequence, 2)  # window_sequence
+        writer.write_bits(0, 1)  # window_shape: 0=sine
+
+    if not skip_ics_info:
+        if is_short:
+            writer.write_bits(max_sfb, 4)  # max_sfb (4 bits for short)
+            if group_len is None:
+                writer.write_bits(0, 7)
+                num_window_groups = 8
+                group_len = [1] * 8
+            else:
+                grouping_bits = 0
+                win_idx = 0
+                for g in range(len(group_len)):
+                    for w in range(1, group_len[g]):
+                        grouping_bits |= 1 << (6 - (win_idx + w - 1))
+                    win_idx += group_len[g]
+                writer.write_bits(grouping_bits, 7)
+                num_window_groups = len(group_len)
+        else:
+            writer.write_bits(max_sfb, 6)  # max_sfb (6 bits for long)
+            writer.write_bits(0, 1)  # predictor_data_present: 0
+            num_window_groups = 1
+            group_len = [1]
 
     # For short blocks, codebook_indices has num_window_groups * num_sfb_per_win
     # entries.  Slice per-group codebooks: group g → cb[g*nspw : g*nspw + max_sfb].
@@ -600,6 +699,7 @@ def build_adts_frame(
     noise_scalefactors: NDArray[np.int32] | None = None,
     noise_scalefactors_r: NDArray[np.int32] | None = None,
     window_sequence: int = 0,
+    ms_mask: NDArray[np.int32] | None = None,
 ) -> bytes:
     """Build a complete ADTS frame.
 
@@ -627,6 +727,7 @@ def build_adts_frame(
             noise_scalefactors_l=noise_scalefactors,
             noise_scalefactors_r=noise_scalefactors_r,
             window_sequence=window_sequence,
+            ms_mask=ms_mask,
         )
     else:
         write_single_channel_element(

@@ -282,7 +282,25 @@ class AACEncoder:
             short_mdct = short_mdct.permute(1, 0, 2)  # (n_short, C, 1024)
             mdct_coeffs[short_indices] = short_mdct
 
-        # 3. Rate control per-channel target.
+        # 3. M/S stereo: transform correlated bands to mid/side
+        ms_mask_per_frame = None
+        if C == 2:
+            from torch_aac.gpu.ms_stereo import apply_ms_transform, compute_ms_mask
+
+            # M/S decision and transform use whichever SFB offsets match
+            # the current block type. For mixed batches, apply to long only.
+            ms_mask_per_frame = compute_ms_mask(
+                mdct_coeffs[:, 0, :], mdct_coeffs[:, 1, :], self._sfb_offsets
+            )  # (B, num_sfb)
+            mid, side = apply_ms_transform(
+                mdct_coeffs[:, 0, :],
+                mdct_coeffs[:, 1, :],
+                ms_mask_per_frame,
+                self._sfb_offsets,
+            )
+            mdct_coeffs = torch.stack([mid, side], dim=1)  # (B, 2, 1024)
+
+        # 4. Rate control per-channel target.
         # Subtract fixed overhead (ADTS header + ICS syntax + section data +
         # scalefactor data + flags + END + padding) from the bit budget so
         # rate control targets only the spectral data portion.
@@ -403,8 +421,9 @@ class AACEncoder:
                     codebooks = pns_cb_updated
                 noise_sf_np = noise_sf.cpu().numpy().astype(np.int32)
 
-        # === GPU Huffman + C bit-packing (long blocks only) ===
-        if self._use_gpu_huffman and not has_short:
+        # === GPU Huffman + C bit-packing (long blocks only, no M/S) ===
+        # GPU path doesn't support common_window=1 yet; fall through to CPU for M/S.
+        if self._use_gpu_huffman and not has_short and ms_mask_per_frame is None:
             return self._encode_batch_gpu_huffman(
                 quantized,
                 codebooks,
@@ -471,6 +490,10 @@ class AACEncoder:
                     frame_cb_r = codebooks_np[i, 1, :num_sfb_long]
                     frame_sf_r = sf_np[i, 1, :num_sfb_long]
 
+                frame_ms = None
+                if ms_mask_per_frame is not None:
+                    frame_ms = ms_mask_per_frame[i].cpu().numpy().astype(np.int32)
+
                 frame_bytes = build_adts_frame(
                     config=self.config,
                     quantized=quantized_np[i, 0],
@@ -486,6 +509,7 @@ class AACEncoder:
                     noise_scalefactors=nsf,
                     noise_scalefactors_r=nsf_r,
                     window_sequence=ws,
+                    ms_mask=frame_ms,
                 )
             adts_frames.append(frame_bytes)
 
