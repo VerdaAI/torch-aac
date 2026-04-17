@@ -169,6 +169,23 @@ class TestStrictDecode:
             aac_path.unlink(missing_ok=True)
             wav_path.unlink(missing_ok=True)
 
+    @pytest.mark.parametrize(
+        "sample_rate",
+        [8000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000],
+    )
+    def test_all_sample_rates_strict(self, sample_rate: int) -> None:
+        """Every supported sample rate must produce valid bitstreams."""
+        t = np.linspace(0, 1, sample_rate, dtype=np.float32)
+        pcm = (np.sin(2 * np.pi * 440 * t) * 0.5).astype(np.float32)
+        _encode_decode_strict(pcm, sample_rate, 64000)
+
+    def test_encode_determinism(self) -> None:
+        """Repeated encode() calls on the same encoder must be identical."""
+        enc = AACEncoder(sample_rate=SR, channels=1, bitrate=128000)
+        aac_a = enc.encode(TRANSIENT)
+        aac_b = enc.encode(TRANSIENT)
+        assert aac_a == aac_b, "encode() not deterministic across calls"
+
 
 # ---------------------------------------------------------------------------
 # Quality baselines — catch SNR regressions

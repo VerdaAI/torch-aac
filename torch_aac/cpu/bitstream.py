@@ -273,7 +273,7 @@ def _write_ics(
                     max_sfb = max(max_sfb, b + 1)
         max_sfb = min(max_sfb, max_sfb_limit)
     else:
-        max_sfb_limit = 49
+        max_sfb_limit = 51  # max long-window bands across all sample rates
         max_sfb = 0
         for i in range(min(num_sfb_total, max_sfb_limit)):
             if int(codebook_indices[i]) != 0:

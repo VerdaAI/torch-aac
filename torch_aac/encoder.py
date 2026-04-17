@@ -128,6 +128,10 @@ class AACEncoder:
         C, _T = pcm_tensor.shape
         assert self.config.channels == C, f"Expected {self.config.channels} channels, got {C}"
 
+        # Reset block-switch state for each new encode() call so repeated
+        # calls on the same encoder produce identical output for the same input.
+        self._prev_win_seq_state = 0  # ONLY_LONG_SEQUENCE
+
         # Frame the audio: (C, num_frames, window_length)
         frames = frame_audio(pcm_tensor, AAC_FRAME_LENGTH, AAC_WINDOW_LENGTH)
         # frames shape: (C, num_frames, 2048)
@@ -235,8 +239,11 @@ class AACEncoder:
             detect_transients,
         )
 
-        # Detect per-frame (use channel 0 for detection)
+        # Detect transients on all channels, OR together (a transient in
+        # any channel triggers short blocks for the frame).
         is_transient = detect_transients(batch_frames[0])  # (B,)
+        for ch in range(1, C):
+            is_transient = is_transient | detect_transients(batch_frames[ch])
         is_transient_list = is_transient.tolist()
 
         # State machine: pure-Python loop (avoids per-frame tensor allocation)
@@ -547,7 +554,7 @@ class AACEncoder:
                 for b in range(num_sfb):
                     if cbs[b] != 0:
                         max_sfb = b + 1
-                max_sfb = min(max_sfb, 49)
+                max_sfb = min(max_sfb, 51)
 
                 fc.append(gg)
                 fl.append(8)  # global_gain
