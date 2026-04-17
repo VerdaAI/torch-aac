@@ -25,7 +25,11 @@ from torch_aac.cpu.huffman import encode_spectral_band
 from torch_aac.gpu.filterbank import apply_window, frame_audio, mdct
 from torch_aac.gpu.huffman_select import select_codebooks
 from torch_aac.gpu.quantizer import quantize_per_band
-from torch_aac.gpu.rate_control import compute_scalefactors, find_global_gain
+from torch_aac.gpu.rate_control import (
+    compute_scalefactors,
+    find_global_gain,
+    find_rate_distortion_sf,
+)
 from torch_aac.tables.sfb_tables import get_sfb_offsets
 
 
@@ -56,6 +60,7 @@ class AACEncoder:
         bitrate: int = 128000,
         device: str = "auto",
         batch_size: int = 0,
+        sf_mode: str = "uniform",
     ) -> None:
         self.config = EncoderConfig(
             sample_rate=sample_rate,
@@ -97,6 +102,7 @@ class AACEncoder:
         # flatness criterion to distinguish true noise from speech formants.
         # Enable for pure-noise workloads via encoder._enable_pns = True.
         self._enable_pns = False
+        self._sf_mode = sf_mode  # "uniform" or "perband"
 
     def encode(self, pcm: np.ndarray | torch.Tensor) -> bytes:
         """Encode PCM audio to AAC-LC ADTS bytes.
@@ -290,8 +296,13 @@ class AACEncoder:
 
         if not has_short:
             # === Fast path: all frames are LONG (common case) ===
-            global_gains = find_global_gain(mdct_coeffs, target)
-            scalefactors = compute_scalefactors(mdct_coeffs, global_gains, self._sfb_offsets)
+            if self._sf_mode == "perband":
+                global_gains, scalefactors = find_rate_distortion_sf(
+                    mdct_coeffs, target, self._sfb_offsets
+                )
+            else:
+                global_gains = find_global_gain(mdct_coeffs, target)
+                scalefactors = compute_scalefactors(mdct_coeffs, global_gains, self._sfb_offsets)
             quantized = quantize_per_band(
                 mdct_coeffs, scalefactors, self._sfb_offsets, mode=QuantMode.HARD
             ).clamp(-8191, 8191)
@@ -313,8 +324,13 @@ class AACEncoder:
 
             if len(long_indices) > 0:
                 long_coeffs = mdct_coeffs[long_indices]
-                long_gains = find_global_gain(long_coeffs, target[long_indices])
-                long_sf = compute_scalefactors(long_coeffs, long_gains, self._sfb_offsets)
+                if self._sf_mode == "perband":
+                    long_gains, long_sf = find_rate_distortion_sf(
+                        long_coeffs, target[long_indices], self._sfb_offsets
+                    )
+                else:
+                    long_gains = find_global_gain(long_coeffs, target[long_indices])
+                    long_sf = compute_scalefactors(long_coeffs, long_gains, self._sfb_offsets)
                 long_q = quantize_per_band(
                     long_coeffs, long_sf, self._sfb_offsets, mode=QuantMode.HARD
                 ).clamp(-8191, 8191)
