@@ -90,6 +90,35 @@ class TestDifferentiableGradients:
         assert audio.grad is not None
         assert not torch.all(audio.grad == 0), "Gradients should be non-zero"
 
+    def test_gradient_flows_cubic(self) -> None:
+        """Gradients should flow through in cubic mode."""
+        codec = DifferentiableAAC(
+            sample_rate=48000,
+            bitrate=128000,
+            channels=1,
+            quant_mode="cubic",
+            device="cpu",
+        )
+        audio = torch.randn(1, 1, 4800, requires_grad=True)
+        output = codec(audio)
+        loss = output.sum()
+        loss.backward()
+        assert audio.grad is not None
+        assert not torch.all(audio.grad == 0), "Cubic gradients should be non-zero"
+
+    def test_cubic_forward_close_to_hard(self) -> None:
+        """Cubic mode should deviate at most 0.125 from hard rounding."""
+        from torch_aac.config import QuantMode
+        from torch_aac.gpu.quantizer import quantize
+
+        coeffs = torch.randn(1, 1, 1024) * 100
+        gain = torch.tensor([150])
+
+        q_hard = quantize(coeffs, gain, mode=QuantMode.HARD)
+        q_cubic = quantize(coeffs, gain, mode=QuantMode.CUBIC)
+        max_diff = (q_hard - q_cubic).abs().max().item()
+        assert max_diff <= 0.126, f"Cubic deviation {max_diff} > 0.125"
+
     def test_gradient_magnitude_reasonable(self) -> None:
         """Gradients should not explode or vanish."""
         codec = DifferentiableAAC(

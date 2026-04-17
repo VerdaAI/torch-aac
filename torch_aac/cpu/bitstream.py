@@ -209,6 +209,8 @@ def write_channel_pair_element(
     huffman_encode_fn: object,
     scalefactors_l: NDArray[np.int32] | None = None,
     scalefactors_r: NDArray[np.int32] | None = None,
+    noise_scalefactors_l: NDArray[np.int32] | None = None,
+    noise_scalefactors_r: NDArray[np.int32] | None = None,
     window_sequence: int = 0,
 ) -> None:
     """Write a channel_pair_element (CPE) to the bitstream."""
@@ -224,6 +226,7 @@ def write_channel_pair_element(
         sfb_offsets,
         huffman_encode_fn,
         scalefactors_l,
+        noise_scalefactors=noise_scalefactors_l,
         window_sequence=window_sequence,
     )
     _write_ics(
@@ -234,6 +237,7 @@ def write_channel_pair_element(
         sfb_offsets,
         huffman_encode_fn,
         scalefactors_r,
+        noise_scalefactors=noise_scalefactors_r,
         window_sequence=window_sequence,
     )
 
@@ -620,6 +624,8 @@ def build_adts_frame(
             huffman_encode_fn,
             scalefactors_l=scalefactors,
             scalefactors_r=scalefactors_r,
+            noise_scalefactors_l=noise_scalefactors,
+            noise_scalefactors_r=noise_scalefactors_r,
             window_sequence=window_sequence,
         )
     else:

@@ -42,8 +42,10 @@ class AACSimulation(nn.Module):
     Args:
         sample_rate: Audio sample rate in Hz.
         bitrate: Target AAC bitrate in bps.
-        quant_mode: ``"ste"`` (straight-through estimator) or ``"noise"``
-            (additive uniform noise). STE is recommended for most training.
+        quant_mode: ``"ste"`` (straight-through estimator), ``"noise"``
+            (additive uniform noise), or ``"cubic"`` (soft-rounding with real
+            gradients). STE is recommended for most training; cubic is useful
+            for warm-up before switching to STE.
         device: PyTorch device. ``"auto"`` selects CUDA > MPS > CPU.
 
     Example::

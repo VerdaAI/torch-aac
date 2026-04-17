@@ -2,7 +2,10 @@
 
 Simulates AAC encoding/decoding as a differentiable PyTorch operation.
 Gradients flow through the entire pipeline via straight-through estimator
-(STE) or noise injection for the quantization step.
+(STE), noise injection, or cubic soft-rounding for the quantization step.
+
+Matches the real encoder's behavior including short-block switching for
+transient audio (silence→impulse, drum hits, plosives).
 
 Example::
 
@@ -31,11 +34,14 @@ class DifferentiableAAC(nn.Module):
     No actual bitstream is produced; instead, the quantization and
     reconstruction artifacts are applied to the audio tensor.
 
+    Includes transient detection and short-block MDCT switching to match
+    the real encoder's behavior on impulsive audio.
+
     Args:
         sample_rate: Audio sample rate in Hz.
         bitrate: Target bitrate in bps (affects quantization coarseness).
         channels: Number of audio channels.
-        quant_mode: Quantization mode ("ste" or "noise").
+        quant_mode: Quantization mode (``"ste"``, ``"noise"``, or ``"cubic"``).
         device: PyTorch device.
     """
 
@@ -87,7 +93,6 @@ class DifferentiableAAC(nn.Module):
 
         B, C, T = audio.shape
 
-        # Frame the audio
         # frame_audio expects (C, T) per batch item; process per batch
         all_reconstructed = []
         all_q: list[torch.Tensor] = []
@@ -95,18 +100,57 @@ class DifferentiableAAC(nn.Module):
         for b in range(B):
             frames = frame_audio(audio[b], AAC_FRAME_LENGTH, AAC_WINDOW_LENGTH)
             # frames: (C, num_frames, 2048)
+            num_frames = frames.shape[1]
 
-            # Window
-            windowed = apply_window(frames)
+            # --- Transient detection & block switching (non-differentiable) ---
+            with torch.no_grad():
+                from torch_aac.gpu.block_switch import (
+                    EIGHT_SHORT_SEQUENCE,
+                    LONG_START_SEQUENCE,
+                    LONG_STOP_SEQUENCE,
+                    ONLY_LONG_SEQUENCE,
+                    detect_transients,
+                )
 
-            # MDCT
+                # Detect on all channels, OR together
+                is_transient = detect_transients(frames[0])
+                for ch in range(1, C):
+                    is_transient = is_transient | detect_transients(frames[ch])
+
+                # State machine (pure Python)
+                prev = ONLY_LONG_SEQUENCE
+                ws_list = []
+                for trans in is_transient.tolist():
+                    was_long = prev in (ONLY_LONG_SEQUENCE, LONG_STOP_SEQUENCE)
+                    if was_long:
+                        ws = LONG_START_SEQUENCE if trans else ONLY_LONG_SEQUENCE
+                    else:
+                        ws = EIGHT_SHORT_SEQUENCE if trans else LONG_STOP_SEQUENCE
+                    ws_list.append(ws)
+                    prev = ws
+                win_seq = torch.tensor(ws_list, device=audio.device, dtype=torch.int64)
+                is_short = win_seq == EIGHT_SHORT_SEQUENCE
+                short_indices = torch.where(is_short)[0]
+
+            # --- Window (with transition windows for START/STOP) ---
+            windowed = apply_window(frames, window_sequence=win_seq)
+
+            # --- MDCT ---
             coeffs = mdct(windowed)  # (C, num_frames, 1024)
-            num_frames = coeffs.shape[1]
+
+            # Replace long MDCT with short MDCT for transient frames
+            if len(short_indices) > 0:
+                from torch_aac.gpu.filterbank import mdct_short
+
+                short_frames = frames[:, short_indices, :]
+                short_mdct = mdct_short(short_frames)  # (C, n_short, 8, 128)
+                short_flat = short_mdct.reshape(C, len(short_indices), 1024)
+                coeffs[:, short_indices, :] = short_flat
 
             # Rearrange to (num_frames, C, 1024)
             coeffs_bc = coeffs.permute(1, 0, 2)
 
-            # Find global gain (detached — rate control is not differentiable)
+            # --- Rate control (detached) ---
             with torch.no_grad():
                 target = torch.full(
                     (num_frames,),
@@ -116,7 +160,7 @@ class DifferentiableAAC(nn.Module):
                 )
                 gains = find_global_gain(coeffs_bc, target, quant_mode=QuantMode.HARD)
 
-            # Differentiable quantize + dequantize
+            # --- Differentiable quantize + dequantize ---
             q = quantize(coeffs_bc, gains, mode=self.config.quant_mode)
             reconstructed_coeffs = dequantize(q, gains)
             if return_rate_loss:
@@ -125,10 +169,8 @@ class DifferentiableAAC(nn.Module):
             # Back to (C, num_frames, 1024)
             reconstructed_coeffs = reconstructed_coeffs.permute(1, 0, 2)
 
-            # Inverse MDCT
+            # --- Inverse MDCT, window, overlap-add ---
             time_domain = imdct(reconstructed_coeffs)
-
-            # Window and overlap-add
             rewindowed = apply_window(time_domain)
             reconstructed = overlap_add(rewindowed, frame_length=AAC_FRAME_LENGTH)
 
@@ -145,17 +187,8 @@ class DifferentiableAAC(nn.Module):
             result = result.squeeze(0)
 
         if return_rate_loss:
-            # Differentiable rate loss: estimated bits normalized by target.
-            # The adaptive global_gain already makes quantized bits fit the
-            # budget for most signals, so we can't use "overflow" alone as a
-            # gradient signal (it'd be zero almost always). Instead, report
-            # actual bit usage relative to target: values near 1.0 mean the
-            # budget is fully consumed, lower values mean slack. Minimizing
-            # rate_loss pushes the model toward audio that's intrinsically
-            # cheap to compress (less high-frequency/transient content),
-            # independent of the reconstruction loss.
             q_cat = torch.cat([qb.reshape(-1, qb.shape[-1]) for qb in all_q], dim=0)
-            bits_per_frame = estimate_bit_count(q_cat)  # (N,)
+            bits_per_frame = estimate_bit_count(q_cat)
             target = max(self._target_bits / max(C, 1), 1.0)
             rate_loss = bits_per_frame.mean() / target
             return result, rate_loss
