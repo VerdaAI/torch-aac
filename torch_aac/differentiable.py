@@ -169,9 +169,26 @@ class DifferentiableAAC(nn.Module):
             # Back to (C, num_frames, 1024)
             reconstructed_coeffs = reconstructed_coeffs.permute(1, 0, 2)
 
-            # --- Inverse MDCT, window, overlap-add ---
-            time_domain = imdct(reconstructed_coeffs)
-            rewindowed = apply_window(time_domain)
+            # --- Inverse MDCT ---
+            # Long frames: standard 1024-point IMDCT → 2048 samples
+            time_domain = imdct(reconstructed_coeffs)  # (C, num_frames, 2048)
+
+            # --- Synthesis windowing ---
+            # Long/transition frames get the synthesis window (sine or transition).
+            # Short frames use imdct_short which applies its own sub-window OLA —
+            # no additional long window (the real decoder works the same way).
+            rewindowed = apply_window(time_domain, window_sequence=win_seq)
+
+            # Short frames: replace with 8x128-point IMDCT + sub-window OLA
+            # (done AFTER windowing so the long window doesn't corrupt them)
+            if len(short_indices) > 0:
+                from torch_aac.gpu.filterbank import imdct_short
+
+                short_rc = reconstructed_coeffs[:, short_indices, :]  # (C, n, 1024)
+                short_rc_8x128 = short_rc.reshape(C, len(short_indices), 8, 128)
+                short_td = imdct_short(short_rc_8x128)  # (C, n, 2048)
+                rewindowed[:, short_indices, :] = short_td
+
             reconstructed = overlap_add(rewindowed, frame_length=AAC_FRAME_LENGTH)
 
             # Trim to original length

@@ -223,6 +223,41 @@ def imdct(mdct_coeffs: torch.Tensor) -> torch.Tensor:
     return torch.matmul(mdct_coeffs, basis.T) * (2.0 / M)
 
 
+def imdct_short(short_coeffs: torch.Tensor) -> torch.Tensor:
+    """Inverse MDCT for short blocks: 8 × 128 coefficients → 2048-sample frame.
+
+    Performs 8 separate 128-point IMDCTs, windows each sub-block with the
+    short sine window, and overlap-adds them within the 2048-sample frame
+    at the same positions used by ``mdct_short`` (offset 448 + w*128).
+
+    This matches the real AAC decoder's short-block reconstruction.
+
+    Args:
+        short_coeffs: Shape ``(..., 8, 128)``.
+
+    Returns:
+        Time-domain frame, shape ``(..., 2048)``.
+    """
+    batch_shape = short_coeffs.shape[:-2]
+    device = short_coeffs.device
+    short_win = sine_window(256, device=device)
+    basis = _cached_basis(256, device)  # (256, 128)
+
+    output = torch.zeros(*batch_shape, 2048, device=device, dtype=short_coeffs.dtype)
+
+    for w in range(8):
+        coeffs_w = short_coeffs[..., w, :]  # (..., 128)
+        # 128-point IMDCT → 256 samples
+        td = torch.matmul(coeffs_w, basis.T) * (2.0 / 128)  # (..., 256)
+        # Window
+        td = td * short_win
+        # Overlap-add at the sub-window position
+        start = 448 + w * 128
+        output[..., start : start + 256] += td
+
+    return output
+
+
 def overlap_add(
     windowed_frames: torch.Tensor,
     frame_length: int = 1024,
