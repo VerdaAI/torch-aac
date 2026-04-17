@@ -1,5 +1,23 @@
 # Changelog
 
+## v0.6.0 (2026-04-17)
+
+DifferentiableAAC short-block parity, correctness fixes, and regression test suite.
+
+### Added
+- **DifferentiableAAC short blocks**: transient detection, short MDCT, transition windows, and `imdct_short` now match the real encoder's behavior. Impulse parity improved from 2.6 dB to 9.4 dB; tone parity unchanged at 78.6 dB.
+- **Regression test suite** (`test_regression.py`): 35 tests covering strict FFmpeg decode for all 10 sample rates, SNR quality baselines, rate control accuracy, stereo strict decode, and encode determinism.
+- **Experimental `sf_mode="perband"`**: per-band RD scalefactor allocation available as a non-default option via `AACEncoder(sf_mode="perband")`.
+- **Cubic mode tests**: gradient flow and forward-deviation tests for `QuantMode.CUBIC`.
+
+### Fixed
+- **32 kHz bitstream corruption**: `max_sfb` was capped at 49 but the corrected 32 kHz SFB table has 51 bands — raised limit to 51 in both CPU bitstream writer and GPU Huffman path.
+- **Encode determinism**: block-switch state machine now resets at the start of each `encode()` call, so repeated calls produce identical output.
+- **Stereo transient detection**: transients are now detected across all channels (OR), not just channel 0 — a right-channel-only drum hit now triggers short blocks.
+- **PNS stereo wiring**: `write_channel_pair_element()` now accepts and forwards `noise_scalefactors_l/r` to both channels' ICS writers.
+
+---
+
 ## v0.5.1 (2026-04-16)
 
 Critical short block bitstream fix.
