@@ -321,6 +321,9 @@ class AACEncoder:
         )
 
         num_sfb_long = len(self._sfb_offsets) - 1
+        sfb_short = get_sfb_offsets_short(self.config.sample_rate)
+        sfb_short_tiled = get_sfb_offsets_short_tiled(self.config.sample_rate)
+        num_sfb_short_tiled = len(sfb_short_tiled) - 1
         has_short = is_short.any().item()
 
         if not has_short:
@@ -361,10 +364,6 @@ class AACEncoder:
             ).reshape(B, C, -1)
         else:
             # === Mixed path: split into long and short subsets ===
-            sfb_short = get_sfb_offsets_short(self.config.sample_rate)
-            sfb_short_tiled = get_sfb_offsets_short_tiled(self.config.sample_rate)
-            num_sfb_short_tiled = len(sfb_short_tiled) - 1
-
             max_num_sfb = max(num_sfb_long, num_sfb_short_tiled)
             gain_shape = (B, C) if C == 2 else (B,)
             global_gains = torch.zeros(gain_shape, device=self._device, dtype=torch.int64)
@@ -465,19 +464,54 @@ class AACEncoder:
                     codebooks = pns_cb_updated
                 noise_sf_np = noise_sf.cpu().numpy().astype(np.int32)
 
-        # === GPU Huffman + C bit-packing (long blocks only, no M/S) ===
-        # GPU path doesn't support common_window=1 yet; fall through to CPU for M/S.
-        if self._use_gpu_huffman and not has_short and ms_mask_per_frame is None:
-            return self._encode_batch_gpu_huffman(
+        # === GPU Huffman + C bit-packing ===
+        # GPU path handles long blocks. Short blocks and M/S use CPU path.
+        if self._use_gpu_huffman and ms_mask_per_frame is None:
+            if not has_short:
+                # All frames are long — full GPU path
+                return self._encode_batch_gpu_huffman(
+                    quantized,
+                    codebooks,
+                    scalefactors,
+                    global_gains,
+                    B,
+                    noise_sf_np=noise_sf_np,
+                )
+            # Mixed: GPU for long frames, CPU for short frames, merge in order
+            long_gpu_frames = self._encode_batch_gpu_huffman(
+                quantized[long_indices],
+                codebooks[long_indices, :, :num_sfb_long],
+                scalefactors[long_indices, :, :num_sfb_long],
+                global_gains[long_indices],
+                len(long_indices),
+                noise_sf_np=(
+                    noise_sf_np[long_indices.cpu().numpy()] if noise_sf_np is not None else None
+                ),
+            )
+            # CPU path for short frames only
+            short_cpu_frames = self._encode_short_frames_cpu(
                 quantized,
                 codebooks,
                 scalefactors,
                 global_gains,
-                B,
-                noise_sf_np=noise_sf_np,
+                win_seq,
+                short_indices,
+                C,
+                noise_sf_np,
+                ms_mask_per_frame,
+                sfb_short,
+                num_sfb_short_tiled,
+                num_sfb_long,
             )
+            # Merge in original frame order
+            adts_frames: list[bytes] = [b""] * B
+            for j, idx in enumerate(long_indices.tolist()):
+                adts_frames[idx] = long_gpu_frames[j]
+            for j, idx in enumerate(short_indices.tolist()):
+                adts_frames[idx] = short_cpu_frames[j]
+            return adts_frames
 
-        # === CPU Huffman path (handles both long and short blocks) ===
+        # === CPU Huffman path (handles all frame types) ===
         quantized_np = quantized.cpu().numpy().astype(np.int32)
         codebooks_np = codebooks.cpu().numpy().astype(np.int32)
         gains_np = global_gains.cpu().numpy().astype(np.int32)
@@ -563,6 +597,72 @@ class AACEncoder:
             adts_frames.append(frame_bytes)
 
         return adts_frames
+
+    def _encode_short_frames_cpu(
+        self,
+        quantized: torch.Tensor,
+        codebooks: torch.Tensor,
+        scalefactors: torch.Tensor,
+        global_gains: torch.Tensor,
+        win_seq: torch.Tensor,
+        short_indices: torch.Tensor,
+        C: int,
+        noise_sf_np: np.ndarray | None,
+        ms_mask_per_frame: torch.Tensor | None,
+        sfb_short: list[int],
+        num_sfb_short_tiled: int,
+        num_sfb_long: int,
+    ) -> list[bytes]:
+        """CPU Huffman path for short-block frames only."""
+        from torch_aac.gpu.block_switch import EIGHT_SHORT_SEQUENCE
+
+        q_np = quantized.cpu().numpy().astype(np.int32)
+        cb_np = codebooks.cpu().numpy().astype(np.int32)
+        g_np = global_gains.cpu().numpy().astype(np.int32)
+        sf_np = scalefactors.cpu().numpy().astype(np.int32)
+        ws_np = win_seq.cpu().numpy().astype(np.int32)
+
+        frames_out: list[bytes] = []
+        for _j, i in enumerate(short_indices.tolist()):
+            ws = int(ws_np[i])
+            is_short_frame = ws == EIGHT_SHORT_SEQUENCE
+            frame_sfb = sfb_short if is_short_frame else self._sfb_offsets
+            n_sfb = num_sfb_short_tiled if is_short_frame else num_sfb_long
+            frame_cb = cb_np[i, 0, :n_sfb]
+            frame_sf = sf_np[i, 0, :n_sfb]
+            gg_l = int(g_np[i, 0]) if g_np.ndim > 1 else int(g_np[i])
+
+            if C == 1:
+                fb = build_adts_frame(
+                    config=self.config,
+                    quantized=q_np[i, 0],
+                    global_gain=gg_l,
+                    codebook_indices=frame_cb,
+                    sfb_offsets=frame_sfb,
+                    huffman_encode_fn=encode_spectral_band,
+                    scalefactors=frame_sf,
+                    window_sequence=ws,
+                )
+            else:
+                frame_cb_r = cb_np[i, 1, :n_sfb]
+                frame_sf_r = sf_np[i, 1, :n_sfb]
+                gg_r = int(g_np[i, 1]) if g_np.ndim > 1 else int(g_np[i])
+                fb = build_adts_frame(
+                    config=self.config,
+                    quantized=q_np[i, 0],
+                    global_gain=gg_l,
+                    codebook_indices=frame_cb,
+                    sfb_offsets=frame_sfb,
+                    huffman_encode_fn=encode_spectral_band,
+                    quantized_r=q_np[i, 1],
+                    global_gain_r=gg_r,
+                    codebook_indices_r=frame_cb_r,
+                    scalefactors=frame_sf,
+                    scalefactors_r=frame_sf_r,
+                    window_sequence=ws,
+                )
+            frames_out.append(fb)
+        return frames_out
 
     def _encode_batch_gpu_huffman(
         self,
