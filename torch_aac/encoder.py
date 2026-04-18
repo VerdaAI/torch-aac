@@ -464,20 +464,55 @@ class AACEncoder:
                     codebooks = pns_cb_updated
                 noise_sf_np = noise_sf.cpu().numpy().astype(np.int32)
 
-        # === GPU Huffman + C bit-packing (all-LONG batches only) ===
-        # Short blocks and M/S stereo use the CPU path. Transients are rare
-        # (<10% of frames in typical audio), so only occasional batches fall
-        # through. The GPU path produces identical quality to CPU for long
-        # blocks but uses a faster batch encoding implementation.
-        if self._use_gpu_huffman and not has_short and ms_mask_per_frame is None:
-            return self._encode_batch_gpu_huffman(
+        # === GPU Huffman + C bit-packing ===
+        # GPU path handles long blocks (ONLY_LONG, LONG_START, LONG_STOP).
+        # Short blocks (EIGHT_SHORT_SEQUENCE) use CPU. M/S uses CPU.
+        win_seq_np_all = win_seq.cpu().numpy().astype(np.int32)
+        if self._use_gpu_huffman and ms_mask_per_frame is None:
+            if not has_short:
+                # All frames are long — full GPU path
+                return self._encode_batch_gpu_huffman(
+                    quantized,
+                    codebooks,
+                    scalefactors,
+                    global_gains,
+                    B,
+                    noise_sf_np=noise_sf_np,
+                    win_seq_np=win_seq_np_all,
+                )
+            # Mixed: GPU for long frames (incl. LONG_START/STOP), CPU for SHORT
+            long_ws = win_seq_np_all[long_indices.cpu().numpy()]
+            long_gpu_frames = self._encode_batch_gpu_huffman(
+                quantized[long_indices],
+                codebooks[long_indices, :, :num_sfb_long],
+                scalefactors[long_indices, :, :num_sfb_long],
+                global_gains[long_indices],
+                len(long_indices),
+                noise_sf_np=None,  # PNS not supported in split yet
+                win_seq_np=long_ws,
+            )
+            # CPU for short frames only
+            short_cpu_frames = self._encode_short_frames_cpu(
                 quantized,
                 codebooks,
                 scalefactors,
                 global_gains,
-                B,
-                noise_sf_np=noise_sf_np,
+                win_seq,
+                short_indices,
+                C,
+                noise_sf_np,
+                ms_mask_per_frame,
+                sfb_short,
+                num_sfb_short_tiled,
+                num_sfb_long,
             )
+            # Merge in original frame order
+            adts_frames: list[bytes] = [b""] * B
+            for j, idx in enumerate(long_indices.tolist()):
+                adts_frames[idx] = long_gpu_frames[j]
+            for j, idx in enumerate(short_indices.tolist()):
+                adts_frames[idx] = short_cpu_frames[j]
+            return adts_frames
 
         # === CPU Huffman path (handles all frame types) ===
         quantized_np = quantized.cpu().numpy().astype(np.int32)
@@ -640,6 +675,7 @@ class AACEncoder:
         global_gains: torch.Tensor,
         B: int,
         noise_sf_np: np.ndarray | None = None,
+        win_seq_np: np.ndarray | None = None,
     ) -> list[bytes]:
         """Fast path: batch GPU Huffman lookup + C bit-packing.
 
@@ -697,11 +733,13 @@ class AACEncoder:
                         max_sfb = b + 1
                 max_sfb = min(max_sfb, 51)
 
+                ws = int(win_seq_np[i]) if win_seq_np is not None else 0
+
                 fc.append(gg)
                 fl.append(8)  # global_gain
                 fc.append(0)
                 fl.append(1)  # reserved
-                fc.append(0)
+                fc.append(ws)
                 fl.append(2)  # window_seq
                 fc.append(0)
                 fl.append(1)  # window_shape
