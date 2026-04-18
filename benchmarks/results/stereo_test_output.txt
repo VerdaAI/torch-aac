@@ -1,0 +1,13 @@
+Found 3 files in benchmarks/test_audio/stereo
+  benchmarks/test_audio/stereo/AM_Contra___Heart_Peripheral_10s.flac
+  benchmarks/test_audio/stereo/BKS___Bulldozer_10s.flac
+  benchmarks/test_audio/stereo/Carlos_Gonzalez___A_Place_For_Us_10s.flac
+
+File                                             BR   SNR (dB)     kbps  Status
+------------------------------------------------------------------------------------------
+AM_Contra___Heart_Peripheral_10s.flac           64k       0.0     4.9k  OK
+AM_Contra___Heart_Peripheral_10s.flac          128k       9.8    47.0k  OK
+BKS___Bulldozer_10s.flac                        64k       0.0     4.9k  OK
+BKS___Bulldozer_10s.flac                       128k       8.4    37.0k  OK
+Carlos_Gonzalez___A_Place_For_Us_10s.flac       64k       0.0     4.9k  OK
+Carlos_Gonzalez___A_Place_For_Us_10s.flac      128k      15.5    35.9k  OK
