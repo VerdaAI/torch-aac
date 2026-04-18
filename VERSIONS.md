@@ -2,6 +2,7 @@
 
 | Version | Date       | Summary |
 |---------|------------|---------|
+| 0.7.1   | 2026-04-18 | Per-channel stereo rate control, disable M/S by default (BKS 9→32 dB) |
 | 0.7.0   | 2026-04-18 | M/S stereo coding, fixed stereo rate control and bit estimator |
 | 0.6.0   | 2026-04-17 | DifferentiableAAC short-block parity, 32kHz fix, encode determinism, regression test suite |
 | 0.5.1   | 2026-04-16 | Fix short block bitstream corruption (missing pulse_data_present bit), PyTorch 2.10+ compat |

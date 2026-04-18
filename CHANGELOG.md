@@ -1,5 +1,22 @@
 # Changelog
 
+## v0.7.1 (2026-04-18)
+
+Per-channel stereo rate control — major stereo quality fix.
+
+### Fixed
+- **Per-channel rate control for stereo**: each channel now gets its own global gain with energy-proportional budget split. Previously, both channels shared one gain, which destroyed the weaker channel in M/S mode (side channel) or the quieter channel in independent mode.
+- **M/S disabled by default**: M/S coding's 0.5 scaling + reconstruction noise (R=M-S) degrades SNR by 10-23 dB on wideband stereo content. Independent L/R with per-channel gains is better for all tested music types. M/S remains available via `encoder._enable_ms = True` for dual-mono content.
+
+### Stereo quality (128k, musdb18 reference files)
+| File | v0.7.0 | v0.7.1 | Improvement |
+|---|---|---|---|
+| BKS Bulldozer (rock) | 9.0 dB | **31.8 dB** | +22.8 dB |
+| AM Contra (electronic) | 11.3 dB | **21.2 dB** | +9.9 dB |
+| Carlos Gonzalez (acoustic) | 27.3 dB | 24.2 dB | -3.1 dB |
+
+---
+
 ## v0.7.0 (2026-04-18)
 
 M/S stereo coding for channel pair elements.
