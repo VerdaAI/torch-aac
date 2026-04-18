@@ -80,7 +80,12 @@ def find_global_gain(
         else:
             max_q = q.abs().max(dim=-1).values
 
-        too_low = (bits > target_bits) | (max_q > MAX_QUANTIZED_VALUE)
+        # When all coefficients quantize to zero, actual spectral bits = 0
+        # regardless of the per-coefficient estimate (zero bands use ZERO_HCB).
+        all_zero = max_q < 0.5
+        effective_bits = torch.where(all_zero, torch.zeros_like(bits), bits)
+
+        too_low = (effective_bits > target_bits) | (max_q > MAX_QUANTIZED_VALUE)
         lo = torch.where(too_low, mid + 1.0, lo)
         hi = torch.where(~too_low, mid, hi)
 

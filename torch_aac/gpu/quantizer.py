@@ -289,13 +289,19 @@ def estimate_bit_count(
         _BITS_PER_COEF_TABLE = _build_bits_table(device)
 
     abs_q = quantized.abs().long().clamp(0, 8192)
-    cost = _BITS_PER_COEF_TABLE[abs_q]
+    cost = _BITS_PER_COEF_TABLE[abs_q]  # per-coeff: pair_cost(q, 0) / 2
 
-    # The lookup table models (q, 0) pairs. Real encoding pairs consecutive
-    # non-zero coefficients, which costs more. Apply a density-adaptive
-    # correction: at density d, the fraction of (nonzero, nonzero) pairs is
-    # ~d², and each such pair costs roughly 1.5x the (q, 0) estimate.
-    total = cost.sum(dim=-1)
-    density = (abs_q > 0).float().mean(dim=-1)
-    pair_correction = 1.0 + 0.5 * density**2
+    # Zero coefficients in ZERO_HCB bands cost 0. Zeros paired with
+    # non-zero values in active bands cost ~table[0]. Scale zero-coefficient
+    # cost by density: at low density most zeros are in zero bands (free),
+    # at high density most zeros are paired with non-zeros (costly).
+    is_nz = (abs_q > 0).float()
+    density = is_nz.mean(dim=-1, keepdim=True)
+    # Non-zero coefficients: full cost. Zero coefficients: cost * density.
+    weight = torch.where(abs_q > 0, torch.ones_like(is_nz), density)
+    total = (cost * weight).sum(dim=-1)
+
+    # Pair correction: consecutive non-zero pairs cost more than (q, 0).
+    density_flat = density.squeeze(-1)
+    pair_correction = 1.0 + 0.5 * density_flat**2
     return total * pair_correction

@@ -300,15 +300,17 @@ class AACEncoder:
             )
             mdct_coeffs = torch.stack([mid, side], dim=1)  # (B, 2, 1024)
 
-        # 4. Rate control per-channel target.
+        # 4. Rate control target.
         # Subtract fixed overhead (ADTS header + ICS syntax + section data +
-        # scalefactor data + flags + END + padding) from the bit budget so
-        # rate control targets only the spectral data portion.
-        _SYNTAX_OVERHEAD_BITS = 300  # ADTS(56) + ICS(19) + sections(~100) + SF(~100) + misc(~25)
-        spectral_budget = self._target_bits - _SYNTAX_OVERHEAD_BITS
-        target = torch.full(
-            (B,), spectral_budget / max(C, 1), device=self._device, dtype=torch.float32
+        # scalefactor data + flags + END + padding) from the bit budget.
+        # For stereo: overhead is ~2x (two ICS blocks) but find_global_gain
+        # sums bits across both channels, so the target is the FULL frame
+        # budget, not per-channel.
+        _SYNTAX_OVERHEAD_PER_CH = (
+            300  # ICS(19) + sections(~100) + SF(~100) + misc(~25) + ADTS share
         )
+        spectral_budget = self._target_bits - _SYNTAX_OVERHEAD_PER_CH * C
+        target = torch.full((B,), spectral_budget, device=self._device, dtype=torch.float32)
 
         # --- Process LONG and SHORT frames with different SFB offsets ---
         from torch_aac.tables.sfb_tables import (
