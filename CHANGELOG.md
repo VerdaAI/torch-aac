@@ -1,5 +1,25 @@
 # Changelog
 
+## v0.7.0 (2026-04-18)
+
+M/S stereo coding for channel pair elements.
+
+### Added
+- **Mid/Side stereo coding**: per-band M/S decision compares energy of (L-R)/2 vs (L+R)/2. When channels are correlated, the side channel is near-zero, saving significant bits. CPE uses `common_window=1` with shared `ics_info` and per-band `ms_used` mask.
+- New module `torch_aac/gpu/ms_stereo.py` with `compute_ms_mask()` and `apply_ms_transform()`.
+
+### Fixed
+- **Stereo bit budget**: `find_global_gain` sums bits across both channels, so the target must be the full frame budget (was incorrectly halved, causing stereo to use 1/2 to 1/13 of target bitrate).
+- **Bit estimator for sparse signals**: zero-coefficient cost now scaled by density — zeros in ZERO_HCB bands cost 0, zeros paired with non-zeros cost proportionally. Fixes stereo 64k producing silence.
+- **Rate control all-zero edge case**: when max quantized value is 0, override bit estimate to 0.
+
+### Changed
+- `write_channel_pair_element()` supports `common_window=1` with shared `ics_info`, `ms_mask_present`, and per-band `ms_used`.
+- `_write_ics()` accepts `skip_ics_info` and `shared_max_sfb` for common-window mode.
+- GPU Huffman path falls through to CPU when M/S is active (GPU M/S support planned).
+
+---
+
 ## v0.6.0 (2026-04-17)
 
 DifferentiableAAC short-block parity, correctness fixes, and regression test suite.
