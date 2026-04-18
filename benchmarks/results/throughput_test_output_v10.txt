@@ -1,0 +1,2 @@
+Pure tone (all GPU): 300 ms = 200x realtime
+Music+transients (split): 305 ms = 197x realtime
