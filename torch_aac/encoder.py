@@ -282,23 +282,25 @@ class AACEncoder:
             short_mdct = short_mdct.permute(1, 0, 2)  # (n_short, C, 1024)
             mdct_coeffs[short_indices] = short_mdct
 
-        # 3. M/S stereo: transform correlated bands to mid/side
+        # 3. M/S stereo: transform correlated bands to mid/side.
+        # M/S is disabled by default — the 0.5 scaling + M-S reconstruction
+        # amplifies quantization noise on wideband content, reducing SNR vs
+        # independent L/R. Enable via encoder._enable_ms = True for content
+        # where the side channel is truly near-zero (e.g., dual-mono).
         ms_mask_per_frame = None
-        if C == 2:
+        if C == 2 and getattr(self, "_enable_ms", False):
             from torch_aac.gpu.ms_stereo import apply_ms_transform, compute_ms_mask
 
-            # M/S decision and transform use whichever SFB offsets match
-            # the current block type. For mixed batches, apply to long only.
             ms_mask_per_frame = compute_ms_mask(
                 mdct_coeffs[:, 0, :], mdct_coeffs[:, 1, :], self._sfb_offsets
-            )  # (B, num_sfb)
+            )
             mid, side = apply_ms_transform(
                 mdct_coeffs[:, 0, :],
                 mdct_coeffs[:, 1, :],
                 ms_mask_per_frame,
                 self._sfb_offsets,
             )
-            mdct_coeffs = torch.stack([mid, side], dim=1)  # (B, 2, 1024)
+            mdct_coeffs = torch.stack([mid, side], dim=1)
 
         # 4. Rate control target.
         # Subtract fixed overhead (ADTS header + ICS syntax + section data +
@@ -327,6 +329,26 @@ class AACEncoder:
                 global_gains, scalefactors = find_rate_distortion_sf(
                     mdct_coeffs, target, self._sfb_offsets
                 )
+            elif C == 2:
+                # Per-channel rate control: each channel gets its own gain.
+                # Split budget by energy so the side channel (small in M/S)
+                # gets a proportionally finer gain.
+                ch_energy = (mdct_coeffs**2).sum(dim=-1)  # (B, 2)
+                total_e = ch_energy.sum(dim=-1, keepdim=True).clamp(min=1e-20)
+                ch_frac = (ch_energy / total_e).clamp(min=0.1)
+                ch_frac = ch_frac / ch_frac.sum(dim=-1, keepdim=True)
+
+                gains_list = []
+                sf_list = []
+                for ch in range(C):
+                    ch_target = target * ch_frac[:, ch]
+                    g = find_global_gain(mdct_coeffs[:, ch : ch + 1], ch_target)
+                    gains_list.append(g)
+                    sf_list.append(
+                        compute_scalefactors(mdct_coeffs[:, ch : ch + 1], g, self._sfb_offsets)
+                    )
+                global_gains = torch.stack(gains_list, dim=1)  # (B, 2)
+                scalefactors = torch.cat(sf_list, dim=1)  # (B, 2, num_sfb)
             else:
                 global_gains = find_global_gain(mdct_coeffs, target)
                 scalefactors = compute_scalefactors(mdct_coeffs, global_gains, self._sfb_offsets)
@@ -344,7 +366,8 @@ class AACEncoder:
             num_sfb_short_tiled = len(sfb_short_tiled) - 1
 
             max_num_sfb = max(num_sfb_long, num_sfb_short_tiled)
-            global_gains = torch.zeros(B, device=self._device, dtype=torch.int64)
+            gain_shape = (B, C) if C == 2 else (B,)
+            global_gains = torch.zeros(gain_shape, device=self._device, dtype=torch.int64)
             scalefactors = torch.zeros(B, C, max_num_sfb, device=self._device, dtype=torch.int64)
             quantized = torch.zeros(B, C, 1024, device=self._device, dtype=mdct_coeffs.dtype)
             codebooks = torch.zeros(B, C, max_num_sfb, device=self._device, dtype=torch.int64)
@@ -355,6 +378,21 @@ class AACEncoder:
                     long_gains, long_sf = find_rate_distortion_sf(
                         long_coeffs, target[long_indices], self._sfb_offsets
                     )
+                elif C == 2:
+                    ch_e = (long_coeffs**2).sum(dim=-1)
+                    tot_e = ch_e.sum(dim=-1, keepdim=True).clamp(min=1e-20)
+                    ch_f = (ch_e / tot_e).clamp(min=0.1)
+                    ch_f = ch_f / ch_f.sum(dim=-1, keepdim=True)
+                    lg_list, ls_list = [], []
+                    for ch in range(C):
+                        ch_t = target[long_indices] * ch_f[:, ch]
+                        g = find_global_gain(long_coeffs[:, ch : ch + 1], ch_t)
+                        lg_list.append(g)
+                        ls_list.append(
+                            compute_scalefactors(long_coeffs[:, ch : ch + 1], g, self._sfb_offsets)
+                        )
+                    long_gains = torch.stack(lg_list, dim=1)
+                    long_sf = torch.cat(ls_list, dim=1)
                 else:
                     long_gains = find_global_gain(long_coeffs, target[long_indices])
                     long_sf = compute_scalefactors(long_coeffs, long_gains, self._sfb_offsets)
@@ -385,7 +423,11 @@ class AACEncoder:
                     pairs_only=False,
                 ).reshape(len(short_indices), C, -1)
 
-                global_gains[short_indices] = short_gains
+                if global_gains.ndim == 2:
+                    # Per-channel gains: broadcast shared short gain to both channels
+                    global_gains[short_indices] = short_gains.unsqueeze(-1).expand(-1, C)
+                else:
+                    global_gains[short_indices] = short_gains
                 scalefactors[short_indices, :, :num_sfb_short_tiled] = short_sf
                 quantized[short_indices] = short_q
                 codebooks[short_indices, :, :num_sfb_short_tiled] = short_cb
@@ -473,10 +515,11 @@ class AACEncoder:
                 frame_sf = sf_np[i, 0, :num_sfb_long]
 
             if C == 1:
+                gg_mono = int(gains_np[i, 0]) if gains_np.ndim > 1 else int(gains_np[i])
                 frame_bytes = build_adts_frame(
                     config=self.config,
                     quantized=quantized_np[i, 0],
-                    global_gain=int(gains_np[i]),
+                    global_gain=gg_mono,
                     codebook_indices=frame_cb,
                     sfb_offsets=frame_sfb,
                     huffman_encode_fn=encode_spectral_band,
@@ -496,15 +539,19 @@ class AACEncoder:
                 if ms_mask_per_frame is not None:
                     frame_ms = ms_mask_per_frame[i].cpu().numpy().astype(np.int32)
 
+                # Per-channel gains: (B, 2) for stereo, (B,) for mono
+                gg_l = int(gains_np[i, 0]) if gains_np.ndim > 1 else int(gains_np[i])
+                gg_r = int(gains_np[i, 1]) if gains_np.ndim > 1 else int(gains_np[i])
+
                 frame_bytes = build_adts_frame(
                     config=self.config,
                     quantized=quantized_np[i, 0],
-                    global_gain=int(gains_np[i]),
+                    global_gain=gg_l,
                     codebook_indices=frame_cb,
                     sfb_offsets=frame_sfb,
                     huffman_encode_fn=encode_spectral_band,
                     quantized_r=quantized_np[i, 1],
-                    global_gain_r=int(gains_np[i]),
+                    global_gain_r=gg_r,
                     codebook_indices_r=frame_cb_r,
                     scalefactors=frame_sf,
                     scalefactors_r=frame_sf_r,
@@ -571,7 +618,7 @@ class AACEncoder:
                 fc: list[int] = []
                 fl: list[int] = []
 
-                gg = int(gains_np[i])
+                gg = int(gains_np[i, ch]) if gains_np.ndim > 1 else int(gains_np[i])
                 cbs = cb_np[i, ch]
                 sfs = sf_np[i, ch]
 
