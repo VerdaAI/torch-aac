@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "torch-aac"
-version = "0.7.1"
+version = "0.7.2"
 description = "GPU-accelerated and differentiable AAC-LC encoder using PyTorch"
 readme = "README.md"
 license = "Elastic-2.0"

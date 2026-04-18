@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.7.2 (2026-04-19)
+
+GPU/CPU split for mixed long+short batches — maintains throughput during transients.
+
+### Performance
+- **GPU/CPU split**: long frames (ONLY_LONG, LONG_START, LONG_STOP) use GPU Huffman, SHORT frames use CPU. Only 1.7% overhead vs pure-GPU (197x vs 200x realtime on RTX 3090). Previously, any short block in the batch forced ALL frames to CPU.
+
+### Fixed
+- **GPU Huffman window_sequence**: was hardcoded to 0 (ONLY_LONG) for all frames. Now writes the correct window type per frame (LONG_START=1, LONG_STOP=3), fixing overlap-add with adjacent SHORT blocks.
+
+---
+
 ## v0.7.1 (2026-04-18)
 
 Per-channel stereo rate control — major stereo quality fix.
