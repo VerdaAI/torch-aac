@@ -6,7 +6,7 @@ Thanks for your interest in contributing! Here's how to get started.
 
 ```bash
 # Clone the repo
-git clone https://github.com/verda-ai/torch-aac.git
+git clone https://github.com/VerdaAI/torch-aac.git
 cd torch-aac
 
 # Create environment (uv recommended, pip works too)

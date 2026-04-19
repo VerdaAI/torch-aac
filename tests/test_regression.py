@@ -171,7 +171,7 @@ class TestStrictDecode:
 
     @pytest.mark.parametrize(
         "sample_rate",
-        [8000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000],
+        [8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000],
     )
     def test_all_sample_rates_strict(self, sample_rate: int) -> None:
         """Every supported sample rate must produce valid bitstreams."""

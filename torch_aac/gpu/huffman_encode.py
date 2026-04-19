@@ -224,7 +224,7 @@ def encode_spectral_gpu(
         for i in range(num_sfb):
             if int(cbs[i].item()) != 0:
                 max_sfb = i + 1
-        max_sfb = min(max_sfb, 49)
+        max_sfb = min(max_sfb, 51)
 
         # --- ICS header (fixed fields) ---
         frame_codes.append(gg)

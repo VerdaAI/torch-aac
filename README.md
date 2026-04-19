@@ -40,8 +40,8 @@ pip install -e ".[dev]"
 ```python
 import torch_aac
 
-# Encode a WAV file to AAC
-torch_aac.encode_file("input.wav", "output.aac", sample_rate=48000, bitrate=128000)
+# Encode a WAV file to AAC (reads sample rate from file)
+torch_aac.encode_file("input.wav", "output.aac", bitrate=128000)
 
 # Encode PCM audio to AAC bytes
 aac_bytes = torch_aac.encode(pcm_float32, sample_rate=48000, bitrate=128000)

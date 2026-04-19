@@ -30,8 +30,8 @@ AAC_SHORT_FRAME_LENGTH = 128
 AAC_NUM_SHORT_WINDOWS = 8
 """Number of short windows per EIGHT_SHORT_SEQUENCE frame."""
 
-MAX_SFB = 49
-"""Maximum number of scalefactor bands across all sample rates."""
+MAX_SFB = 51
+"""Maximum number of scalefactor bands across all sample rates (32 kHz has 51)."""
 
 ADTS_HEADER_SIZE = 7
 """Size of ADTS fixed header in bytes (no CRC)."""
