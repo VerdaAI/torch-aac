@@ -1,6 +1,7 @@
 # torch-aac
 
 [![CI](https://github.com/VerdaAI/torch-aac/actions/workflows/ci.yml/badge.svg)](https://github.com/VerdaAI/torch-aac/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/torch-aac.svg)](https://pypi.org/project/torch-aac/)
 [![Python 3.10+](https://img.shields.io/badge/python-3.10%2B-blue.svg)](https://python.org)
 [![License: ELv2](https://img.shields.io/badge/license-ELv2-green.svg)](LICENSE)
 [![PyTorch](https://img.shields.io/badge/PyTorch-2.0%2B-ee4c2c.svg)](https://pytorch.org)
@@ -10,127 +11,152 @@
 
 Built for two use cases: (1) training neural audio models that are robust to AAC compression, and (2) fast GPU-accelerated audio encoding.
 
-> Outperforms Apple AudioToolbox and FFmpeg's native AAC encoder on SNR across all tested signal types and bitrates (48k-320k). See [benchmarks](#quality-benchmarks).
+> Beats FFmpeg's native AAC encoder by +2 to +12 dB SNR on real audio (speech, music) across all tested bitrates. 200x realtime on RTX 3090.
 
-## Features
+## Install
 
-- **Fast** — 212x realtime on RTX 3090, ~97x on CPU, ~67x on Apple MPS. JIT-compiled C bit-packer, batch-vectorized GPU Huffman lookup.
-- **Differentiable** — Backpropagate through AAC encoding via straight-through estimator (STE) or noise injection. Train codec-robust models directly.
-- **Accurate** — Beats Apple AudioToolbox by 2-25 dB SNR on real audio (TTS speech, music, noise) at 128 kbps.
-- **Standard** — Produces valid AAC-LC ADTS bitstreams decodable by FFmpeg, VLC, browsers, and every major audio player.
-- **Multi-platform** — CUDA, Apple MPS (Metal), and CPU. `device="auto"` picks the best available.
+```bash
+pip install torch-aac
+```
+
+Or install from source:
+
+```bash
+git clone https://github.com/VerdaAI/torch-aac.git
+cd torch-aac
+pip install -e ".[dev]"
+```
+
+**Requirements:** Python 3.10+, PyTorch >= 2.0. GPU optional (CUDA or Apple MPS); falls back to CPU automatically.
+
+| Platform                  | Backend | Status                        |
+|---------------------------|---------|-------------------------------|
+| Linux / Windows + NVIDIA  | CUDA    | Supported (RTX 3090, T4, etc) |
+| macOS + Apple Silicon     | MPS     | Supported (M1/M2/M3/M4)      |
+| Any                       | CPU     | Supported (PyTorch fallback)  |
 
 ## Quick Start
 
 ```python
 import torch_aac
 
-# Encode PCM audio to AAC
+# Encode a WAV file to AAC
+torch_aac.encode_file("input.wav", "output.aac", sample_rate=48000, bitrate=128000)
+
+# Encode PCM audio to AAC bytes
 aac_bytes = torch_aac.encode(pcm_float32, sample_rate=48000, bitrate=128000)
 
-# Batch encode multiple streams in parallel
+# Encode multiple streams in parallel
 results = torch_aac.encode_batch([audio1, audio2, audio3], sample_rate=48000)
+```
 
-# Differentiable mode — gradients flow through AAC simulation
+### Differentiable Mode
+
+Train neural audio models robust to AAC compression:
+
+```python
 codec = torch_aac.DifferentiableAAC(sample_rate=48000, bitrate=128000)
-decoded = codec(audio_tensor)  # forward: encode → quantize → decode
+decoded = codec(audio_tensor)  # forward: encode -> quantize -> decode
 loss = F.mse_loss(decoded, target)
-loss.backward()  # gradients propagate through the codec
+loss.backward()  # gradients flow through the AAC simulation
 
-# Rate-distortion training
-decoded, rate_loss = codec(audio_tensor, return_rate_loss=True)
-total_loss = mse_loss + 0.1 * rate_loss  # encourage compressible output
+# Three quantization modes:
+# "ste"   — faithful forward, surrogate backward (recommended)
+# "noise" — stochastic approximation, real gradient
+# "cubic" — smooth surrogate, real gradient (good for warm-up)
 ```
 
-## Install
+### Stereo Encoding
 
-```bash
-pip install -e ".[dev]"
+```python
+# Stereo with per-channel rate control
+enc = torch_aac.AACEncoder(sample_rate=48000, channels=2, bitrate=128000)
+aac_bytes = enc.encode(stereo_pcm)  # shape: (samples, 2) or (2, samples)
 ```
 
-Requires Python 3.10+ and PyTorch >= 2.0.
+## Features
 
-| Platform                  | Backend | Status                        |
-|---------------------------|---------|-------------------------------|
-| Linux / Windows + NVIDIA  | CUDA    | Supported (RTX 3090, T4)      |
-| macOS + Apple Silicon     | MPS     | Supported (M1/M2/M3/M4)      |
-| Any                       | CPU     | Supported (PyTorch fallback)  |
+- **Fast** — 200x realtime on RTX 3090, ~98x on Apple MPS. GPU/CPU split for mixed long+short blocks. JIT-compiled C bit-packer.
+- **Differentiable** — Backpropagate through AAC via STE, noise injection, or cubic soft-rounding. Includes short-block simulation for transient-faithful training.
+- **Accurate** — Beats FFmpeg on speech (+12 dB), music (+2 dB), and stereo content (22-32 dB on real music).
+- **Standard** — Valid AAC-LC ADTS bitstreams. Passes FFmpeg strict decode (`-xerror`) at all sample rates (8-96 kHz).
+- **Stereo** — Per-channel rate control with energy-proportional budget. M/S stereo infrastructure (opt-in).
+- **Short blocks** — Transient detection, block switching (LONG_START/EIGHT_SHORT/LONG_STOP), transition windows per ISO 14496-3.
+- **Multi-platform** — CUDA, Apple MPS, CPU. `device="auto"` picks the best available.
 
 ## Quality Benchmarks
 
-**Head-to-head vs Apple AudioToolbox and FFmpeg at 128 kbps** (mono, 48 kHz, encoder-delay-aligned SNR in dB):
+### Real Audio (RTX 3090, cross-correlation aligned)
 
-| Signal          | torch-aac | Apple AudioToolbox | FFmpeg native | vs Apple |
-|-----------------|----------:|-------------------:|--------------:|---------:|
-| TTS speech      |    51.3   |         40.2       |        25.6   |  +11.1   |
-| Real music (mp3)|    37.0   |         30.4       |        29.2   |   +6.6   |
-| Pink noise      |    20.0   |         16.3       |        14.7   |   +3.7   |
-| Pure sine       |    76.1   |         56.7       |        50.8   |  +19.4   |
-| Transient       |    46.8   |         27.0       |        38.4   |  +19.8   |
+| Dataset | torch-aac vs FFmpeg | Wins |
+|---|---|---|
+| **Speech** (LibriSpeech) | **+12.4 dB** avg | 15/15 |
+| **Music** (musdb18) | **+2.3 dB** avg | 23/30 |
+| **Stereo music** (musdb18 refs) | 22-32 dB SNR | Strict decode OK |
 
-All comparisons use the same methodology: encode float32 PCM → decode with FFmpeg → measure SNR with encoder-specific delay compensation (ours: 0 samples, Apple: 2112, FFmpeg: 1024).
+### Synthetic Signals (128 kbps, mono, 48 kHz)
 
-<details>
-<summary>Full bitrate sweep (48k–320k)</summary>
-
-| Bitrate | Signal     | torch-aac | Apple AT | FFmpeg |
-|---------|------------|----------:|---------:|-------:|
-| 48k     | TTS speech |    34.3   |    27.2  |  22.8  |
-| 48k     | Pink noise |    11.1   |    10.7  |   8.8  |
-| 48k     | Real music |    25.2   |    21.2  |  19.2  |
-| 128k    | TTS speech |    51.4   |    40.2  |  25.3  |
-| 128k    | Pink noise |    19.6   |    16.1  |  14.9  |
-| 128k    | Real music |    37.0   |    30.4  |  29.2  |
-| 256k    | TTS speech |    73.9   |    48.4  |  47.2  |
-| 256k    | Pink noise |    32.9   |    30.8  |  26.1  |
-| 256k    | Real music |    58.0   |    45.6  |  46.4  |
-
-</details>
+| Signal          | torch-aac | FFmpeg native | Delta |
+|-----------------|----------:|--------------:|------:|
+| 1 kHz sine      |    73.5   |        44.8   | +28.7 |
+| Chord (440+880) |    71.5   |        42.7   | +28.8 |
+| Speech formants |    72.0   |        45.9   | +26.1 |
+| Noise           |    10.2   |         7.1   |  +3.1 |
 
 ### Differentiable Mode Parity
 
-The differentiable path produces **bit-identical output** to the encode path (verified: correlation 1.0000, max error < 2e-4 across all signal types). Models trained with `DifferentiableAAC` see exactly the artifacts they'll face in production.
+STE simulation matches real encode-decode with 78.6 dB parity on tones and 9.4 dB on impulses (short-block IMDCT reconstruction).
+
+## Throughput
+
+| Device                   | Realtime factor | Notes                              |
+|--------------------------|---------------:|------------------------------------|
+| **RTX 3090 (CUDA)**     |         200x   | GPU/CPU split for mixed blocks     |
+| **RTX 3080 Ti (CUDA)**  |         197x   | Same pipeline                      |
+| Apple MPS (M-series)     |          98x   | GPU stages on Metal                |
+| CPU                      |       40-60x   | C BitWriter + CPU Huffman          |
+
+Peak VRAM: 570 MB for 60s encode. Mixed long+short batches: 1.7% overhead vs pure-GPU.
 
 ## Architecture
 
 ```
-                        ┌─────────────────────────────────────────────┐
-  PCM Audio ──────────▶ │               GPU Stages                    │
-                        │  Windowing → MDCT → Rate Control →          │
-                        │  Quantization → Codebook Selection →        │
-                        │  Batch Huffman Lookup                       │
-                        └──────────────┬──────────────────────────────┘
-                                       │ (codes, lengths) arrays
-                        ┌──────────────▼──────────────────────────────┐
-                        │             CPU Stages                      │
-                        │  C BitWriter (JIT-compiled) →               │
-                        │  ADTS Header Assembly → .aac bytes          │
-                        └─────────────────────────────────────────────┘
+                        +---------------------------------------------+
+  PCM Audio ----------> |               GPU Stages                    |
+                        |  Windowing -> MDCT -> Transient Detection ->|
+                        |  Rate Control -> Quantization ->            |
+                        |  Codebook Selection -> GPU Huffman Lookup    |
+                        +--------------+------------------------------+
+                                       | (codes, lengths) arrays
+                        +--------------v------------------------------+
+                        |             CPU Stages                      |
+                        |  C BitWriter (JIT-compiled) ->              |
+                        |  ADTS Header Assembly -> .aac bytes         |
+                        +---------------------------------------------+
 ```
 
-**Encode mode**: Full pipeline producing valid AAC-LC ADTS bitstream.
+**Encode mode**: Full pipeline producing valid AAC-LC ADTS bitstream with short-block support and per-channel stereo.
 
-**Differentiable mode**: GPU-only simulation — MDCT → soft quantize (STE/noise) → dequantize → IMDCT. No bitstream produced; gradients flow end-to-end.
+**Differentiable mode**: GPU-only simulation — MDCT (long + short) -> soft quantize (STE/noise/cubic) -> dequantize -> IMDCT. No bitstream produced; gradients flow end-to-end.
 
-## Throughput
+## Supported Configurations
 
-| Device                      | 10s mono | 60s mono | Notes                              |
-|-----------------------------|--------:|---------:|------------------------------------|
-| **RTX 3090 (CUDA)**        |  184x   |   212x   | Batch GPU Huffman + C BitWriter    |
-| **RTX 3080 Ti (CUDA)**     |  185x   |   206x   | Same pipeline, less VRAM           |
-| CPU (Apple M-series)        |   97x   |    —     | C BitWriter + batch GPU Huffman    |
-| MPS (Apple Silicon GPU)     |   67x   |    —     | GPU stages on Metal                |
-| Batch 8×10s (RTX 3090)      |  203x   |    —     | Aggregate realtime                 |
+| Parameter     | Values                                                       |
+|---------------|--------------------------------------------------------------|
+| Sample rates  | 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000 Hz |
+| Channels      | 1 (mono), 2 (stereo)                                         |
+| Bitrate       | 48000-320000 bps                                             |
+| Profile       | AAC-LC                                                       |
+| Container     | ADTS (.aac)                                                  |
+| Quant modes   | hard, ste, noise, cubic                                      |
 
-Peak VRAM: 570 MB for 60s encode. Full results: [benchmarks/results/](benchmarks/results/).
+## Known Limitations
 
-**vs FFmpeg native AAC encoder** (CPU baseline):
-
-| Duration | RTX 3090 speedup | RTX 3080 Ti speedup |
-|----------|:----------------:|:-------------------:|
-| 1s       |       3.4x       |        3.2x         |
-| 10s      |       2.0x       |        1.8x         |
-| 60s      |       1.2x       |        1.1x         |
+- **No psychoacoustic per-band allocation** — uses uniform scalefactors. Efficient at low-mid bitrates; FFmpeg's per-band allocator is better at 192k+ on dense polyphonic content.
+- **M/S stereo disabled by default** — infrastructure complete but the noise doubling from R=M-S reconstruction degrades wideband content. Enable via `encoder._enable_ms = True` for dual-mono content.
+- **No TNS** (Temporal Noise Shaping) — short blocks handle most transient cases.
+- **ADTS only** — no M4A/MP4 container output. Use FFmpeg to remux: `ffmpeg -i output.aac -c copy output.m4a`
+- **Not thread-safe** — MDCT basis cache is global. Use separate processes for parallel encoding.
 
 ## CLI
 
@@ -150,39 +176,15 @@ ffmpeg -i input.mp4 -f f32le -ar 48000 -ac 1 pipe:1 | python -m torch_aac -b 128
 | [`differentiable_training.py`](examples/differentiable_training.py) | Train a model robust to AAC |
 | [`compare_quality.py`](examples/compare_quality.py) | Encode your own WAV, compare bitrates |
 
-## Supported Configurations
-
-| Parameter     | Values                                 |
-|---------------|----------------------------------------|
-| Sample rates  | 16000, 44100, 48000 Hz                 |
-| Channels      | 1 (mono), 2 (stereo)                   |
-| Bitrate       | 48000–320000 bps                       |
-| Profile       | AAC-LC                                 |
-| Container     | ADTS (.aac)                            |
-
 ## Development
 
 ```bash
-uv venv && uv pip install -e ".[dev]"
-pytest                          # 52 tests
-ruff check . && ruff format .   # lint
-python benchmark/bench_quality.py   # quality bench
-python benchmark/bench_throughput.py --quick  # speed bench
+git clone https://github.com/VerdaAI/torch-aac.git
+cd torch-aac
+pip install -e ".[dev]"
+pytest                          # 110 tests (strict decode, quality baselines, rate control)
+ruff check . && ruff format .   # lint + format
 ```
-
-## Roadmap
-
-- [x] Core AAC-LC encode pipeline (GPU + CPU)
-- [x] Differentiable mode with STE/noise quantization
-- [x] Apple MPS support
-- [x] Batch multi-stream encoding API
-- [x] C BitWriter JIT extension
-- [x] Batch-flattened GPU Huffman
-- [x] Accurate Huffman bit cost estimator
-- [ ] Short-block transient handling
-- [ ] M4A/MP4 container output
-- [ ] CUDA performance validation on datacenter GPUs
-- [ ] Perceptual metrics (PEAQ/POLQA) benchmarking
 
 ## License
 
@@ -197,7 +199,7 @@ If you use torch-aac in research, please cite:
   title  = {torch-aac: GPU-Accelerated Differentiable AAC-LC Encoder},
   author = {Verda AI},
   year   = {2026},
-  url    = {https://github.com/verda-ai/torch-aac}
+  url    = {https://github.com/VerdaAI/torch-aac}
 }
 ```
 
