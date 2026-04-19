@@ -283,10 +283,11 @@ class AACEncoder:
             mdct_coeffs[short_indices] = short_mdct
 
         # 3. M/S stereo: transform correlated bands to mid/side.
-        # M/S is disabled by default — the 0.5 scaling + M-S reconstruction
-        # amplifies quantization noise on wideband content, reducing SNR vs
-        # independent L/R. Enable via encoder._enable_ms = True for content
-        # where the side channel is truly near-zero (e.g., dual-mono).
+        # Disabled by default — the noise doubling from R=M-S reconstruction
+        # degrades wideband content (BKS: 32→8 dB) even with selective per-band
+        # M/S. Needs quantization-aware RD decision to be safe for all content.
+        # Enable via encoder._enable_ms = True for dual-mono or highly
+        # correlated acoustic content where M/S saves 2+ dB.
         ms_mask_per_frame = None
         if C == 2 and getattr(self, "_enable_ms", False):
             from torch_aac.gpu.ms_stereo import apply_ms_transform, compute_ms_mask
