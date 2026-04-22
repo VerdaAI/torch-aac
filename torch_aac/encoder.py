@@ -378,6 +378,9 @@ class AACEncoder:
                     long_gains, long_sf = find_rate_distortion_sf(
                         long_coeffs, target[long_indices], self._sfb_offsets
                     )
+                    # Broadcast to (n_long, C) if stereo gains tensor expects it
+                    if global_gains.ndim == 2 and long_gains.ndim == 1:
+                        long_gains = long_gains.unsqueeze(-1).expand(-1, C)
                 elif C == 2:
                     ch_e = (long_coeffs**2).sum(dim=-1)
                     tot_e = ch_e.sum(dim=-1, keepdim=True).clamp(min=1e-20)

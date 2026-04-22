@@ -151,14 +151,33 @@ class DifferentiableAAC(nn.Module):
             coeffs_bc = coeffs.permute(1, 0, 2)
 
             # --- Rate control (detached) ---
+            # Match real encoder: per-channel gains for stereo with
+            # energy-proportional budget split.
+            _OVERHEAD = 300 * C
+            spectral_budget = self._target_bits - _OVERHEAD
             with torch.no_grad():
-                target = torch.full(
-                    (num_frames,),
-                    self._target_bits / max(C, 1),
-                    device=audio.device,
-                    dtype=torch.float32,
-                )
-                gains = find_global_gain(coeffs_bc, target, quant_mode=QuantMode.HARD)
+                if C == 2:
+                    ch_energy = (coeffs_bc**2).sum(dim=-1)  # (F, 2)
+                    total_e = ch_energy.sum(dim=-1, keepdim=True).clamp(min=1e-20)
+                    ch_frac = (ch_energy / total_e).clamp(min=0.1)
+                    ch_frac = ch_frac / ch_frac.sum(dim=-1, keepdim=True)
+                    gains_list = []
+                    for ch in range(C):
+                        ch_target = (
+                            torch.full((num_frames,), spectral_budget, device=audio.device)
+                            * ch_frac[:, ch]
+                        )
+                        gains_list.append(
+                            find_global_gain(
+                                coeffs_bc[:, ch : ch + 1], ch_target, quant_mode=QuantMode.HARD
+                            )
+                        )
+                    gains = torch.stack(gains_list, dim=1)  # (F, 2)
+                else:
+                    target = torch.full(
+                        (num_frames,), spectral_budget, device=audio.device, dtype=torch.float32
+                    )
+                    gains = find_global_gain(coeffs_bc, target, quant_mode=QuantMode.HARD)
 
             # --- Differentiable quantize + dequantize ---
             q = quantize(coeffs_bc, gains, mode=self.config.quant_mode)
